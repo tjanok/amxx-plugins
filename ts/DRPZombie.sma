@@ -14,10 +14,11 @@
 #include <engine>
 #include <nvault>
 #include <hamsandwich>
+#include <tse>
 
 // Settings
 
-new const g_HUDTitle[] = "[DZombie]^nhttp://drp.hopto.org"
+new const g_HUDTitle[] = "TS Zombies!"
 new g_ZombieTeamName[33]
 
 #define HUD_RED 15
@@ -69,6 +70,7 @@ new p_TimePeriod
 new p_ClientZombies
 new p_ZombieHealth
 new p_ChangeLights
+new p_BaseLights
 new p_KnockBack
 
 // TS Weapons
@@ -125,94 +127,99 @@ new g_ZombieTalkDelay
 
 public plugin_precache()
 {
-	g_VaultFile = nvault_open("DZombieVault");
+	g_VaultFile = nvault_open( "DZombieVault" );
 	if(g_VaultFile == INVALID_HANDLE)
-		Error("Unable to open nVault File",1);
+		set_fail_state( "unable to open nvault file" );
 	
 	g_MaxPlayers = get_maxplayers();
 	
-	for(new Count;Count < sizeof(g_ZombieNoises);Count++)
+	for( new Count; Count < sizeof(g_ZombieNoises); Count++ )
 		precache_sound(g_ZombieNoises[Count]);
 	
-	// CVars
-	p_TimePeriod = register_cvar("DZ_TimeChangeMin","8"); // time in minutes to change the "time zone" morning,afternoon etc
-	p_ClientZombies = register_cvar("DZ_ClientZombies","0"); // clients can join the zombie team? yes/no 1/0
-	p_ZombieHealth = register_cvar("DZ_ZombieStartHealth","120");
-	p_ChangeLights = register_cvar("DZ_ChangeLights","1");
-	p_KnockBack = register_cvar("DZ_KnockBack","8500");
+	p_TimePeriod 		= register_cvar( "dz_phasetime","8");
+	p_ClientZombies 	= register_cvar( "dz_allowclientzombies", "0" );
+	p_ZombieHealth 		= register_cvar( "dz_zombiehp", "120" );
+	p_ChangeLights 		= register_cvar( "dz_dynamiclights", "1" );
+	p_BaseLights 		= register_cvar( "dz_baselight", "1" );
+	p_KnockBack 		= register_cvar( "dz_knockforce", "8500" );
 	
 	// This isn't the best idea. But it helps solves some issues
 	// Such as settings CVars in-time.
 	// The correct way of doing this is to read the file ourselves. But that's not needed
-	get_cvar_string("servercfgfile",g_Cache,255);
-	server_cmd("exec %s",g_Cache);
+	get_cvar_string( "servercfgfile", g_Cache, 255 );
+	
+	server_cmd( "exec %s", g_Cache );
 	server_exec();
 	
-	// Precache
-	get_cvar_string("mp_teamlist",g_Cache,255);
-	strtok(g_Cache,g_Cache,255,g_Cache,255,';');
-	
-	new FoundTeam = (containi(g_Cache,"zombies") == -1) ? 0 : 1
-	
-	if(!FoundTeam)
-		Error("Plugin did not find the team name ^"Zombies^" in ^"mp_teamlist^"",1);
-	else
-		copy(g_ZombieTeamName,32,g_Cache);
+	if( get_cvar_num( "mp_teamplay" ) == 0 ) {
+		server_cmd( "mp_teamplay 1" );
+		server_print( "[DZombies] Switching to teamplay gamemode..." );
+	}
+
+	new leftTeam[33];
+	new rightTeam[33];
+
+	get_cvar_string( "mp_teamlist", g_Cache, 255 );
+	strtok( g_Cache, leftTeam, 32, rightTeam, 32, ';' );
+
+	if( containi( rightTeam, "zombies" ) == -1 ) {
+		formatex( g_Cache, 255, "did not find the team name ^"Zombies^" in ^"mp_teamlist^"\nThe Zombies team MUST be located as the second team only\nSecond team found as: ", rightTeam );
+		set_fail_state( g_Cache );
+	} else {
+		copy( g_ZombieTeamName, 32, g_Cache );
+	}
 	
 	// Filling the zombie models
 	// Hopfully like the info says, the team for the zombies is team two, so the model list, will be to the right
-	get_cvar_string("mp_teammodels",g_Cache,255);
-	strtok(g_Cache,g_Cache,255,g_Cache,255,'|');
-	
-	new ModelNum,CharNum,ModelChar
-	
-	while(g_Cache[CharNum])
+
+	get_cvar_string( "mp_teammodels", g_Cache, 255 );
+	strtok( g_Cache, g_Cache, 255, g_Cache, 255, '|' );
+
+	// loop each char, building the zombie model
+	new index = 0;
+	new modelIndex = 0;
+	new modelCount = 0;
+
+	while( g_Cache[index] )
 	{
-		if(g_Cache[CharNum] == ';')
+		if( g_Cache[index] == ';' )
 		{
-			ModelNum++
-			ModelChar = 0
-			
-			CharNum++
+			modelCount++
+			modelIndex = 0
+			index++;
 			continue
 		}
 		
-		g_ZombieModels[ModelNum][ModelChar] = g_Cache[CharNum]
+		g_ZombieModels[modelCount][modelIndex] = g_Cache[index];
 		
-		ModelChar++
-		CharNum++
+		modelIndex++
+		index++;
 	}
-	g_ZombieModelsNum = ModelNum
-	
-	server_print("^n[---------------------[DZOMBIE DEBUG]----------------------]");
-	server_print("The Zombie team %s found - Name: %s^nMake sure the SECOND team is the Zombie Team IE: ^"mp_teamlist^" ^"Gordon;ZOMBIES^"",FoundTeam ? "was" : "WAS NOT",g_ZombieTeamName);
-	
-	server_print("DO NOT USE THE ^"ADDBOT^" COMMAND Use: DZ_AddBot instead");
-	server_print("DO NOT HAVE MORE THAN TWO TEAMS. This plugin only supports human / zombies^nZombie models precached:");
-	
-	for(new Count;Count <= g_ZombieModelsNum;Count++)
+	g_ZombieModelsNum = modelCount;
+
+	// send the models to the clients
+	for( new Count; Count <= g_ZombieModelsNum; Count++)
 	{
-		server_print("%s",g_ZombieModels[Count]);
-		formatex(g_Cache,255,"models/player/%s/%s.mdl",g_ZombieModels[Count],g_ZombieModels[Count]);
-		precache_model(g_Cache);
+		formatex( g_Cache, 255, "models/player/%s/%s.mdl", g_ZombieModels[Count], g_ZombieModels[Count] );
+		precache_model( g_Cache );
 	}
-	
-	server_print("[---------------------[DZOMBIE DEBUG]----------------------]^n");
 }
 
 public plugin_init()
 {
 	// Main
-	register_plugin("DZombie","0.1a","Drak");
+	register_plugin( "TS Zombies (DZombies)", "1.0", "TJ" );
 	
 	// Events
-	register_event("DeathMsg","Event_DeathMSG","a");
-	register_event("ResetHUD","Event_ResetHUD","b");
-	register_event("WeaponInfo","Event_WeaponInfo","b");
-	register_message(50,"Message_TS50");
+	register_event( "DeathMsg", "Event_DeathMSG", "a" );
+	register_event( "ResetHUD", "Event_ResetHUD", "b" );
+	register_event( "WeaponInfo", "Event_WeaponInfo", "b" );
+	register_message( 50, "Message_TS50" );
+
+	//register_forward( FM_SetClientMaxspeed, "fwd_SetClientMaxspeed" );
 	
 	// Used for player spawning
-	RegisterHam(Ham_Spawn,"player","Event_PlayerSpawn",1);
+	RegisterHam( Ham_Spawn, "player", "Event_PlayerSpawn", 1 );
 	
 	// Commands
 	register_srvcmd("DZ_PerkLevel","CmdUpdatePerk",_,"<perk> <level> - set's what level you need to be (or higher) to have this perk");
@@ -249,6 +256,7 @@ public plugin_init()
 	
 	// Tasks
 	set_task(1.0,"HUDTask",_,_,_,"b");
+	
 }
 // --------------------------------------------------------------------------------------
 // Commands
@@ -568,8 +576,8 @@ RenderHUD()
 		
 		set_hudmessage(HUD_RED,HUD_GREEN,HUD_BLUE,HUD_X,HUD_Y,_,_,99.0,_,_,-1);
 		
-		formatex(g_Cache,255,"%s^n^nZombies Killed: #%d^nLevel: %d/30^nTime: %s^nBonus Zombie: %s^n%s",
-		g_HUDTitle,g_UserFrags[Count],FragsToLevel(Count),g_Time[g_TimePeriod],ZombieName[0] ? ZombieName : "N/A",g_BonusZombie ? "Kill the Bonus Zombie for 100 Frag Points!^n" : "");
+		formatex(g_Cache,255,"%s^n^nZombies Killed: #%d^nLevel: %d/30^nWeapon ??/%d^nTime: %s^nBonus Zombie: %s^n%s",
+		g_HUDTitle,g_UserFrags[Count],FragsToLevel(Count),TS_GetUserSlots(Count),g_Time[g_TimePeriod],ZombieName[0] ? ZombieName : "N/A",g_BonusZombie ? "Kill the Bonus Zombie for 100 Frag Points!^n" : "");
 		
 		show_hudmessage(Count,g_Cache);
 	}
@@ -673,6 +681,8 @@ public Event_PlayerSpawn(id)
 {
 	if(!is_user_alive(id))
 		return HAM_HANDLED
+	
+	tse_setuserslots( id, 1000 );
 		
 	// Human player
 	client_infochanged(id);
@@ -893,6 +903,8 @@ TS_SetUserSlots(const id,const Slots)
 // Functions below are copied from "fakemeta_util" by VEN
 ts_giveweaponspawn(id,const WeaponID,const ExtraClip)
 {
+	tse_giveuserweap(id, WeaponID, ExtraClip );
+	/*
 	new ent = engfunc(EngFunc_CreateNamedEntity,engfunc(EngFunc_AllocString,"ts_groundweapon"))
 	if(!ent)
 		return PLUGIN_CONTINUE
@@ -911,7 +923,15 @@ ts_giveweaponspawn(id,const WeaponID,const ExtraClip)
 	dllfunc(DLLFunc_Use,ent,id);
 	
 	engfunc(EngFunc_RemoveEntity,ent);
+
+	new wep[32]
+	new num = 0;
+
+	get_user_weapons(id, wep, num);
+
+	server_print("WEAPONS: %d", wep );
 	return ent
+	*/
 }
 fm_set_kvd(Entity,const key[],const value[],const classname[]) 
 {
