@@ -11,22 +11,28 @@
 #include <amxmodx>
 #include <amxmisc>
 #include <fakemeta>
+#include <fakemeta_util>
 #include <engine>
 #include <nvault>
 #include <hamsandwich>
 #include <tse>
 
-// Settings
-
 new const g_HUDTitle[] = "TS Zombies!"
+new const g_GameName[] = "TS Zombies"
+
 new g_ZombieTeamName[33]
 
-#define HUD_RED 15
-#define HUD_GREEN 125
-#define HUD_BLUE 15
-#define HUD_X -100.0
-#define HUD_Y -0.75
-#define MAX_MODELS 5 // maximum number of zombie team models
+#define HUD_RED 45
+#define HUD_GREEN 164
+#define HUD_BLUE 232
+#define HUD_X -1.0
+#define HUD_Y 1.0
+
+#define MAX_ZOMBIE_MODELS 5
+#define MAX_ZOMBIE_HP 250
+#define MAX_PLAYER_HP 250
+#define MAX_ZOMBIE_SKILL 5.0
+#define BOSS_ZOMBIE_SKILL 9.9
 
 // End Settings
 
@@ -62,16 +68,19 @@ new g_BonusZombie
 new g_MainMenu
 new g_GunMenu
 
-new g_ZombieModels[MAX_MODELS][33]
+new g_ZombieModels[MAX_ZOMBIE_MODELS][33]
 new g_ZombieModelsNum
+new g_ZombieCount
 
-// PCvars
+new p_Zombies
 new p_TimePeriod
 new p_ClientZombies
 new p_ZombieHealth
 new p_ChangeLights
 new p_BaseLights
 new p_KnockBack
+new p_PlayerHealth
+new p_SpawnGodTime
 
 // TS Weapons
 enum
@@ -136,14 +145,19 @@ public plugin_precache()
 	for( new Count; Count < sizeof(g_ZombieNoises); Count++ )
 		precache_sound(g_ZombieNoises[Count]);
 	
+	p_Zombies			= register_cvar( "dz_zombies", "50" );
 	p_TimePeriod 		= register_cvar( "dz_phasetime","8");
 	p_ClientZombies 	= register_cvar( "dz_allowclientzombies", "0" );
-	p_ZombieHealth 		= register_cvar( "dz_zombiehp", "120" );
+	p_ZombieHealth 		= register_cvar( "dz_zombiehp", "200" );
+	p_PlayerHealth		= register_cvar( "dz_playerhp", "125" );
 	p_ChangeLights 		= register_cvar( "dz_dynamiclights", "1" );
-	p_BaseLights 		= register_cvar( "dz_baselight", "1" );
+	p_BaseLights 		= register_cvar( "dz_baselight", "26" );
 	p_KnockBack 		= register_cvar( "dz_knockforce", "8500" );
+	p_SpawnGodTime		= register_cvar( "dz_postspawngod", "5" );
+
+	hook_cvar_change( p_BaseLights, "cvar_baseLightsChanged" );
 	
-	// This isn't the best idea. But it helps solves some issues
+	// This isn't the best idea. But it helps solves some issues 
 	// Such as settings CVars in-time.
 	// The correct way of doing this is to read the file ourselves. But that's not needed
 	get_cvar_string( "servercfgfile", g_Cache, 255 );
@@ -152,8 +166,7 @@ public plugin_precache()
 	server_exec();
 	
 	if( get_cvar_num( "mp_teamplay" ) == 0 ) {
-		server_cmd( "mp_teamplay 1" );
-		server_print( "[DZombies] Switching to teamplay gamemode..." );
+		error( "server does not have mp_teamplay = 1, please set and restart", true );
 	}
 
 	new leftTeam[33];
@@ -166,7 +179,7 @@ public plugin_precache()
 		formatex( g_Cache, 255, "did not find the team name ^"Zombies^" in ^"mp_teamlist^"\nThe Zombies team MUST be located as the second team only\nSecond team found as: ", rightTeam );
 		set_fail_state( g_Cache );
 	} else {
-		copy( g_ZombieTeamName, 32, g_Cache );
+		copy( g_ZombieTeamName, 32, rightTeam );
 	}
 	
 	// Filling the zombie models
@@ -217,15 +230,17 @@ public plugin_init()
 	register_message( 50, "Message_TS50" );
 
 	//register_forward( FM_SetClientMaxspeed, "fwd_SetClientMaxspeed" );
+	register_forward( FM_GetGameDescription, "fwd_GetGameDescription" );
 	
 	// Used for player spawning
 	RegisterHam( Ham_Spawn, "player", "Event_PlayerSpawn", 1 );
 	
 	// Commands
-	register_srvcmd("DZ_PerkLevel","CmdUpdatePerk",_,"<perk> <level> - set's what level you need to be (or higher) to have this perk");
-	register_concmd("DZ_PerkLevel","CmdUpdatePerk",_,"<perk> <level> - set's what level you need to be (or higher) to have this perk");
-	
-	register_srvcmd("DZ_AddBot","CmdAddBot",_,"- adds a bot to the zombie team. use this instead of ^"addbot^"");
+	register_concmd( "dz_removebot", "cmdRemoveBot", ADMIN_BAN, "removes a zombie bot from the server" );
+	register_concmd( "dz_addbot", "cmdAddBot", ADMIN_BAN, "adds a zombie bot to the server" );
+	//register_srvcmd("DZ_PerkLevel","CmdUpdatePerk",_,"<perk> <level> - set's what level you need to be (or higher) to have this perk");
+	//register_concmd("DZ_PerkLevel","CmdUpdatePerk",_,"<perk> <level> - set's what level you need to be (or higher) to have this perk");
+	//register_srvcmd("DZ_AddBot","CmdAddBot",_,"- adds a bot to the zombie team. use this instead of ^"addbot^"");
 	
 	// Client Commands
 	register_clcmd("say","CmdSay");
@@ -258,6 +273,34 @@ public plugin_init()
 	set_task(1.0,"HUDTask",_,_,_,"b");
 	
 }
+
+public fwd_GetGameDescription()
+{
+	forward_return( FMV_STRING, g_GameName );
+	return FMRES_SUPERCEDE
+}
+
+public cvar_baseLightsChanged( pcvar, const oldValue[], const newValue[] )
+{
+	server_cmd( "sv_skycolor_r 0;sv_skycolor_g 0;sv_skycolor_b 0" );
+	server_exec();
+
+	new intLevel = 0;
+	intLevel = str_to_num( newValue );
+
+	new lookup[] = "abcdefghijklmnopqrstuvwxyz";
+
+	if( intLevel <= 1 || intLevel >= 26 ) {
+		set_lights( "#OFF" );
+		notify( 0, "[DZ] Baselights have been reset to the default" );
+	} else {
+		new letter[1]
+		formatex( letter, 1, "%c", lookup[intLevel % 26] );
+		set_lights( letter );
+		notify( 0, "[DZ] Baselights have been updated to %d/26", intLevel );
+	}
+}
+
 // --------------------------------------------------------------------------------------
 // Commands
 
@@ -423,16 +466,40 @@ public CmdUpdatePerk(id,level,cid)
 	
 	return PLUGIN_HANDLED
 }			
-public CmdAddBot(id)
+public cmdAddBot( id, level, cid )
 {
-	if(!is_dedicated_server())
-		return
+	new bool:ServerCommand = bool:is_dedicated_server();
 	
-	set_task(2.0,"DelayAddBot");
+	if( !ServerCommand && !cmd_access( id, level, cid, 2 ) )
+		return PLUGIN_HANDLED
+	
+	set_task( 2.0, "addBotPlayer" );
 }
 
-public DelayAddBot()
-	server_cmd("addcustombot Zombie Zombies 9.9");
+public cmdRemoveBot( id, level, cid )
+{
+	new bool:ServerCommand = bool:is_dedicated_server();
+	
+	if( !ServerCommand && !cmd_access( id, level, cid, 2 ) )
+		return PLUGIN_HANDLED
+
+	removeBotPlayer( getRandomBot() );
+}
+
+public addBotPlayer()
+{
+	notify( 0, "[DZ] Adding zombie to server" );
+	server_cmd( "addcustombot Zombie %s %f", g_ZombieTeamName, random_float( 1.0, MAX_ZOMBIE_SKILL ) );
+}
+
+public removeBotPlayer(idx)
+{
+	if( idx )
+	{
+		notify( 0, "[DZ] Removing zombie from server" );
+		server_cmd( "kick #%i", get_user_userid( idx ) );
+	}
+}
 // --------------------------------------------------------------------------------------
 // I would rather not do this. But there isn't a better way to delay the load
 // The nature of most mods, sometimes there steamid is still not valid in client_authorized();
@@ -452,7 +519,7 @@ public DelayLoad(id)
 	get_user_authid(id,AuthID,35);
 	
 	if(!CheckAuthID(AuthID))
-		return Error("Invalid SteamID on Connecting (%s)",_,AuthID);
+		return error("Invalid SteamID on Connecting (%s)",_,AuthID);
 	
 	if(nvault_get(g_VaultFile,AuthID,g_Cache,255))
 	{
@@ -466,7 +533,7 @@ public DelayLoad(id)
 	return PLUGIN_HANDLED
 }
 
-public client_disconnect(id)
+public client_disconnected(id)
 {
 	g_UserLoaded[id] = 0
 	g_UserShowMessage[id] = 0
@@ -496,7 +563,33 @@ public client_infochanged(id)
 // --------------------------------------------------------------------------------------
 // HUD
 public HUDTask()
+{
+	populateBots();
 	RenderHUD()
+}
+
+new botLastAddded = 0
+
+populateBots()
+{
+	if( ( get_systime() - botLastAddded ) < 5.0 )
+		return
+
+	new humanPlayers = getHumanCount();
+	new Float:numberOfZombies = ( g_MaxPlayers - humanPlayers ) * ( get_pcvar_num( p_Zombies ) * 0.01 )
+	new num = floatround( numberOfZombies );
+
+	if( num > g_ZombieCount )
+	{
+		botLastAddded = get_systime();
+		set_task( 2.0, "addBotPlayer" )
+	}
+
+	if( ( g_ZombieCount + 1 )  > ( g_MaxPlayers - humanPlayers ) )
+	{
+		removeBotPlayer( getRandomBot() );
+	}
+}
 
 RenderHUD()
 {
@@ -539,65 +632,61 @@ RenderHUD()
 		g_ZombieTalkDelay = 0
 	}
 	
-	new Count,Float:UserHealth
+	new idx,Float:UserHealth
 	new ZombieName[33]
 	
 	if(g_BonusZombie)
 		get_user_name(g_BonusZombie,ZombieName,32);
 	
-	for(Count = 0;Count <= g_MaxPlayers;Count++)
+	static team[33]
+	g_ZombieCount = 0
+
+	for( idx = 0; idx <= g_MaxPlayers; idx++ )
 	{
-		if(!is_user_alive(Count))
+		if( !is_user_connected( idx ) )
+			continue
+
+		// dirty way of counting how many "zombies" exist on the server
+		// counts both bots and clients
+		get_user_team( idx, team, 32 );
+		
+		if( equali( team, g_ZombieTeamName ) )
+			g_ZombieCount++
+
+		if(!is_user_alive(idx))
 			continue
 		
 		// Bot Origin Fixing
 		// HACK HACK:
 		// When they're Z origin is less then 450 (or higher since we use abs()) they are in the sewer / fell under the map, so we fix there origin
-		if(is_user_bot(Count))
+		if(is_user_bot( idx ))
 		{
 			new Origin[3]
-			get_user_origin(Count,Origin);
+			get_user_origin(idx,Origin);
 			
 			if(abs(Origin[2]) > 450)
-				FixZombieLocation(Count,200.0);
+				FixZombieLocation(idx,200.0);
 			
 			if(TalkingZombies)
-				emit_sound(Count,CHAN_AUTO,g_ZombieNoises[random(sizeof(g_ZombieNoises))],VOL_NORM,ATTN_NORM,0,PITCH_NORM);
+				emit_sound(idx,CHAN_AUTO,g_ZombieNoises[random(sizeof(g_ZombieNoises))],VOL_NORM,ATTN_NORM,0,PITCH_NORM);
 			
-			if(random(100) < 15)
-				FixZombieLocation(Count,200.0);
+			//if(random(100) < 15)
+			//	FixZombieLocation(idx,200.0);
 			
 			continue
 		}
 		
-		UserHealth = entity_get_float(Count,EV_FL_health);
+		UserHealth = entity_get_float(idx,EV_FL_health);
 		if(UserHealth < 100.0)
-			entity_set_float(Count,EV_FL_health,UserHealth + 1.0);
+			entity_set_float(idx,EV_FL_health,UserHealth + 1.0);
 		
-		set_hudmessage(HUD_RED,HUD_GREEN,HUD_BLUE,HUD_X,HUD_Y,_,_,99.0,_,_,-1);
+		set_hudmessage(HUD_RED,HUD_GREEN,HUD_BLUE,HUD_X,HUD_Y,_,_,99.0,_,_,1);
 		
-		formatex(g_Cache,255,"%s^n^nZombies Killed: #%d^nLevel: %d/30^nWeapon ??/%d^nTime: %s^nBonus Zombie: %s^n%s",
-		g_HUDTitle,g_UserFrags[Count],FragsToLevel(Count),TS_GetUserSlots(Count),g_Time[g_TimePeriod],ZombieName[0] ? ZombieName : "N/A",g_BonusZombie ? "Kill the Bonus Zombie for 100 Frag Points!^n" : "");
+		formatex(g_Cache,255,"Zombies Killed: %d - Level: %d/%d - Phase: %s",
+			g_UserFrags[idx],FragsToLevel(idx),30,g_Time[g_TimePeriod]);
 		
-		show_hudmessage(Count,g_Cache);
+		show_hudmessage(idx,g_Cache);
 	}
-}
-
-// Again.. Cheap and dirty
-GetRandomBot(PlayerHack=0)
-{	
-	if(!get_playersnum())
-		return 0
-	
-	new iPlayers[32],iNum
-	PlayerHack ? 
-		get_players(iPlayers,iNum,"ac") : get_players(iPlayers,iNum,"ad");
-	
-	if(!iNum)
-		return 0
-	
-	new Player = iPlayers[random(iNum)]
-	return is_user_alive(Player) ? Player : 0
 }
 // --------------------------------------------------------------------------------------
 public Message_TS50(msg_id,msg_dest,msg_entity)
@@ -654,15 +743,16 @@ public Event_ResetHUD(id)
 {
 	if(!is_user_alive(id))
 		return PLUGIN_HANDLED
+
+	static teamName[33]
+	get_user_team( id, teamName, 32 );
 	
-	static TeamName[23]
-	get_user_team(id,TeamName,22);
-	
-	if(equali(TeamName,g_ZombieTeamName))
+	if( equali( teamName, g_ZombieTeamName ) )
 	{
 		new Float:pZombieHealth = get_pcvar_float(p_ZombieHealth);
-		if(pZombieHealth)
-			entity_set_float(id,EV_FL_health,pZombieHealth);
+		
+		if( pZombieHealth > 0 && p_ZombieHealth <= MAX_ZOMBIE_HP )
+			entity_set_float( id, EV_FL_health, pZombieHealth );
 		
 		// Model settings
 		set_task(2.0,"DelayModelChange");
@@ -682,17 +772,19 @@ public Event_PlayerSpawn(id)
 	if(!is_user_alive(id))
 		return HAM_HANDLED
 	
-	tse_setuserslots( id, 1000 );
-		
-	// Human player
 	client_infochanged(id);
+
+	new Float:playerStartHealth = get_pcvar_float(p_PlayerHealth);
+
+	if( playerStartHealth > 0 && playerStartHealth <= MAX_PLAYER_HP )
+		entity_set_float( id, EV_FL_health, playerStartHealth );
 	
 	if(!g_UserShowMessage[id])
 	{
 		client_print(id,print_chat,"[DZ] You can access the main menu by: /menu");
 		g_UserShowMessage[id] = 1
 	}
-	
+
 	// HP Boost Perk
 	if(g_UserPerks[id] & PW_HEALTHBOOST)
 	{
@@ -709,8 +801,28 @@ public Event_PlayerSpawn(id)
 		entity_set_float(id,EV_FL_health,entity_get_float(id,EV_FL_health) + Health);
 		client_print(id,print_chat,"[DZ] Your health boost is currently at: +%d",floatround(Health));
 	}
+
+	new godTime = get_pcvar_num( p_SpawnGodTime );
+	if( godTime > 0 )
+	{
+		new idData[1]
+
+		idData[0] = id
+		fm_set_user_godmode( id, 1 );
+
+		set_task( float( godTime ), "clearGodmode", random(200) + id, idData, 1 );
+	}
 	
 	return HAM_IGNORED
+}
+
+public clearGodmode( const idData[])
+{
+	new id = idData[0]
+	if( id && is_user_connected( id ) )
+	{
+		fm_set_user_godmode( id, 0 );
+	}
 }
 
 // Forces weapons to be dropped if you're on the zombie team
@@ -761,7 +873,7 @@ SaveUserData(const id)
 		nvault_set(g_VaultFile,AuthID,g_Cache);
 	}
 	else
-		Error("Saved User Data, with Invalid AuthID (%s)",_,AuthID);
+		error("Saved User Data, with Invalid AuthID (%s)",_,AuthID);
 }
 
 bool:CheckAuthID(const AuthID[])
@@ -800,20 +912,69 @@ RemovePerk(id,Perk,All=0)
 		g_UserPerks[id] = (g_UserPerks[id] & ~Perk)
 }
 
-Error(const Reason[],Fatal=0,any:...)
+error( const reason[], bool:fatal=false, any:... )
 {
-	if(Reason[0])
+	if( reason[0] )
 	{
-		vformat(g_Cache,255,Reason,3);
-		log_amx("Error called: Reason: %s - Fatal: %s",g_Cache,Fatal ? "Yes" : "No");
+		vformat( g_Cache, 255, reason, 3 );
+		log_amx( "Error called: Reason: %s - Fatal: %s", g_Cache, fatal ? "Yes" : "No" );
 	}
-	if(Fatal)
+	if( fatal )
 	{
-		nvault_close(g_VaultFile);
-		set_fail_state(Reason);
+		nvault_close( g_VaultFile );
+		set_fail_state( reason );
 	}
 	
 	return PLUGIN_HANDLED
+}
+
+notify( id, const message[], any:... )
+{
+	vformat( g_Cache, 255, message, 3 );
+	client_print( id, print_chat, g_Cache );
+	log_amx( g_Cache );
+}
+
+getRandomBot()
+{
+	if(!get_playersnum())
+		return 0
+
+	new players[MAX_PLAYERS]
+	new playerIndex
+
+	get_players( players, playerIndex, "de", g_ZombieTeamName );
+
+	if( playerIndex < 1 )
+		return 0
+
+	return players[random( playerIndex )]
+}
+
+getRandomHuman()
+{
+	if(!get_playersnum())
+		return 0
+
+	new players[MAX_PLAYERS]
+	new playerIndex
+
+	get_players( players, playerIndex, "c" );
+
+	if( playerIndex < 1 )
+		return 0
+
+	return players[random( playerIndex )]
+}
+
+getHumanCount()
+{
+	static players[MAX_PLAYERS]
+
+	new humanCount = 0
+	get_players( players, humanCount, "c" );
+
+	return humanCount
 }
 
 // Hawk
@@ -841,7 +1002,7 @@ FixZombieLocation(ZombieID,Float:Radius,Reset=0)
 	}
 	
 	if(!RandomPlayer)
-		RandomPlayer = GetRandomBot(1);
+		RandomPlayer = getRandomHuman();
 	
 	if(!RandomPlayer)
 	{
@@ -932,15 +1093,6 @@ ts_giveweaponspawn(id,const WeaponID,const ExtraClip)
 	server_print("WEAPONS: %d", wep );
 	return ent
 	*/
-}
-fm_set_kvd(Entity,const key[],const value[],const classname[]) 
-{
-	set_kvd(0,KV_ClassName,classname);
-	set_kvd(0,KV_KeyName,key);
-	set_kvd(0,KV_Value,value);
-	set_kvd(0,KV_fHandled,0);
-	
-	return dllfunc(DLLFunc_KeyValue,Entity,0);
 }
 public plugin_end()
 	nvault_close(g_VaultFile)
