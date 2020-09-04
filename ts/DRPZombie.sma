@@ -52,6 +52,8 @@ new g_UserPerks[33]
 new g_UserLoaded[33]
 new g_UserWeaponID[33]
 new g_UserShowMessage[33]
+new g_UserWeapons[33][45]
+new g_UserGodtime[33]
 
 new const g_Time[4][33] =
 {
@@ -81,6 +83,7 @@ new p_BaseLights
 new p_KnockBack
 new p_PlayerHealth
 new p_SpawnGodTime
+new p_StartWeapon
 
 // TS Weapons
 enum
@@ -125,6 +128,8 @@ enum
 	TSW_ASKORPION
 }
 
+#define TSX_MAX_WEAPONID 45
+
 new const g_ZombieNoises[3][33] = 
 {
 	"nihilanth/nil_alone.wav",
@@ -154,6 +159,7 @@ public plugin_precache()
 	p_BaseLights 		= register_cvar( "dz_baselight", "26" );
 	p_KnockBack 		= register_cvar( "dz_knockforce", "8500" );
 	p_SpawnGodTime		= register_cvar( "dz_postspawngod", "5" );
+	p_StartWeapon		= register_cvar( "dz_startwpn", "23" );
 
 	hook_cvar_change( p_BaseLights, "cvar_baseLightsChanged" );
 	
@@ -253,21 +259,18 @@ public plugin_init()
 	menu_additem(g_MainMenu,"Help");
 	
 	g_GunMenu = menu_create("[GunMenu]^nYou can hold more guns^nthe higher level you are^n^nPage:","_DGunMenu");
-	menu_additem(g_GunMenu,"Glock18");
-	menu_additem(g_GunMenu,"Glock20");
-	menu_additem(g_GunMenu,"Five-Seven");
-	menu_additem(g_GunMenu,"RagingBull");
-	menu_additem(g_GunMenu,"CKnife");
-	menu_additem(g_GunMenu,"Katana");
-	menu_additem(g_GunMenu,"Mossberg");
-	menu_additem(g_GunMenu,"Sawed Off");
-	menu_additem(g_GunMenu,"M3");
-	menu_additem(g_GunMenu,"MP7");
-	menu_additem(g_GunMenu,"Skorpion");
-	menu_additem(g_GunMenu,"MP5SD");
-	menu_additem(g_GunMenu,"M4A1");
-	menu_additem(g_GunMenu,"AK47");
-	menu_additem(g_GunMenu,"M16A4");
+	menu_additem( g_GunMenu, "Last Used Weapons" );
+	menu_additem( g_GunMenu, "Glock18" );
+	menu_additem( g_GunMenu, "Glock20" );
+	menu_additem( g_GunMenu, "Five-Seven" );
+	menu_additem( g_GunMenu, "Deagle" );
+	menu_additem( g_GunMenu, "RagingBull" );
+	menu_additem( g_GunMenu, "CKnife" );
+	menu_additem( g_GunMenu, "Katana" );
+	menu_additem( g_GunMenu, "Mossberg" );
+	menu_additem( g_GunMenu, "Sawed Off" );
+	menu_additem( g_GunMenu, "M3" );
+	menu_additem( g_GunMenu, "MP7" );
 	
 	// Tasks
 	set_task(1.0,"HUDTask",_,_,_,"b");
@@ -655,6 +658,18 @@ RenderHUD()
 
 		if(!is_user_alive(idx))
 			continue
+
+		// Godmode handling
+		if( g_UserGodtime[idx] > 0 )
+		{
+			new curTime = get_systime();
+			client_print( idx, print_chat, "[DZ] Spawn Invincibility Ending %i secs...", ( g_UserGodtime[idx] - curTime ) );
+			
+			if( g_UserGodtime[idx] - curTime <= 0 ) {
+				fm_set_user_godmode( idx, 0 );
+				g_UserGodtime[idx] = 0
+			}
+		}
 		
 		// Bot Origin Fixing
 		// HACK HACK:
@@ -805,12 +820,19 @@ public Event_PlayerSpawn(id)
 	new godTime = get_pcvar_num( p_SpawnGodTime );
 	if( godTime > 0 )
 	{
+		g_UserGodtime[id] = godTime + get_systime();
 		new idData[1]
 
 		idData[0] = id
 		fm_set_user_godmode( id, 1 );
 
-		set_task( float( godTime ), "clearGodmode", random(200) + id, idData, 1 );
+		//set_task( float( godTime ), "clearGodmode", random(200) + id, idData, 1 );
+	}
+
+	new startWeapon = get_pcvar_num( p_StartWeapon );
+	if( startWeapon > 0 && startWeapon <= TSX_MAX_WEAPONID )
+	{
+		tse_giveuserweap( id, startWeapon, 1000, TSE_ATM_LASERSIGHT + TSE_ATM_FLASHLIGHT );
 	}
 	
 	return HAM_IGNORED
@@ -1064,6 +1086,7 @@ TS_SetUserSlots(const id,const Slots)
 // Functions below are copied from "fakemeta_util" by VEN
 ts_giveweaponspawn(id,const WeaponID,const ExtraClip)
 {
+	g_UserWeapons[id][WeaponID]=1
 	tse_giveuserweap(id, WeaponID, ExtraClip );
 	/*
 	new ent = engfunc(EngFunc_CreateNamedEntity,engfunc(EngFunc_AllocString,"ts_groundweapon"))
