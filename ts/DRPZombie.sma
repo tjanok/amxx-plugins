@@ -17,10 +17,10 @@
 #include <hamsandwich>
 #include <tse>
 
-new const g_HUDTitle[] = "TS Zombies!"
 new const g_GameName[] = "TS Zombies"
 
 new g_ZombieTeamName[33]
+new g_HumanTeamName[33]
 
 #define HUD_RED 45
 #define HUD_GREEN 164
@@ -65,6 +65,9 @@ new const g_Time[4][33] =
 
 new g_TimePeriod
 new g_TimePeriodNum
+new g_CurrentLightLevel
+
+new const g_LightLookup[] = "abcdefghijklmnopqrstuvwxyz";
 
 new g_BonusZombie
 new g_MainMenu
@@ -143,7 +146,7 @@ public plugin_precache()
 {
 	g_VaultFile = nvault_open( "DZombieVault" );
 	if(g_VaultFile == INVALID_HANDLE)
-		set_fail_state( "unable to open nvault file" );
+		error( "unable to open nvault file", true );
 	
 	g_MaxPlayers = get_maxplayers();
 	
@@ -156,10 +159,10 @@ public plugin_precache()
 	p_ZombieHealth 		= register_cvar( "dz_zombiehp", "200" );
 	p_PlayerHealth		= register_cvar( "dz_playerhp", "125" );
 	p_ChangeLights 		= register_cvar( "dz_dynamiclights", "1" );
-	p_BaseLights 		= register_cvar( "dz_baselight", "26" );
+	p_BaseLights 		= register_cvar( "dz_baselight", "0" ); 		// 1 = darkest, 25 = brightest
 	p_KnockBack 		= register_cvar( "dz_knockforce", "8500" );
 	p_SpawnGodTime		= register_cvar( "dz_postspawngod", "5" );
-	p_StartWeapon		= register_cvar( "dz_startwpn", "23" );
+	p_StartWeapon		= register_cvar( "dz_startwpn", "22" );
 
 	hook_cvar_change( p_BaseLights, "cvar_baseLightsChanged" );
 	
@@ -186,6 +189,8 @@ public plugin_precache()
 		set_fail_state( g_Cache );
 	} else {
 		copy( g_ZombieTeamName, 32, rightTeam );
+		copy( g_HumanTeamName, 32, leftTeam );
+		server_print( "[DZ] Found teams. Human '%s' and Zombie '%s'", g_HumanTeamName, g_ZombieTeamName );
 	}
 	
 	// Filling the zombie models
@@ -235,7 +240,7 @@ public plugin_init()
 	register_event( "WeaponInfo", "Event_WeaponInfo", "b" );
 	register_message( 50, "Message_TS50" );
 
-	//register_forward( FM_SetClientMaxspeed, "fwd_SetClientMaxspeed" );
+	//register_forward( FM_SetClientMaxspeed,  "fwd_SetClientMaxspeed" );
 	register_forward( FM_GetGameDescription, "fwd_GetGameDescription" );
 	
 	// Used for player spawning
@@ -244,6 +249,7 @@ public plugin_init()
 	// Commands
 	register_concmd( "dz_removebot", "cmdRemoveBot", ADMIN_BAN, "removes a zombie bot from the server" );
 	register_concmd( "dz_addbot", "cmdAddBot", ADMIN_BAN, "adds a zombie bot to the server" );
+	register_concmd( "dz_spawnwep", "cmdSpawnWeapon", ADMIN_BAN, "spawns the given weaponid at your location" );
 	//register_srvcmd("DZ_PerkLevel","CmdUpdatePerk",_,"<perk> <level> - set's what level you need to be (or higher) to have this perk");
 	//register_concmd("DZ_PerkLevel","CmdUpdatePerk",_,"<perk> <level> - set's what level you need to be (or higher) to have this perk");
 	//register_srvcmd("DZ_AddBot","CmdAddBot",_,"- adds a bot to the zombie team. use this instead of ^"addbot^"");
@@ -274,7 +280,12 @@ public plugin_init()
 	
 	// Tasks
 	set_task(1.0,"HUDTask",_,_,_,"b");
-	
+
+	// Lighting bug fix
+	server_cmd( "sv_skycolor_r 0;sv_skycolor_g 0;sv_skycolor_b 0" );
+	server_exec();
+
+	g_CurrentLightLevel = get_pcvar_num( p_BaseLights );
 }
 
 public fwd_GetGameDescription()
@@ -285,25 +296,23 @@ public fwd_GetGameDescription()
 
 public cvar_baseLightsChanged( pcvar, const oldValue[], const newValue[] )
 {
-	server_cmd( "sv_skycolor_r 0;sv_skycolor_g 0;sv_skycolor_b 0" );
-	server_exec();
-
 	new intLevel = 0;
 	intLevel = str_to_num( newValue );
 
-	new lookup[] = "abcdefghijklmnopqrstuvwxyz";
-
-	if( intLevel <= 1 || intLevel >= 26 ) {
+	if( intLevel <= 0 || intLevel >= 26 ) {
 		set_lights( "#OFF" );
 		notify( 0, "[DZ] Baselights have been reset to the default" );
+		g_CurrentLightLevel = 0
 	} else {
-		new letter[1]
-		formatex( letter, 1, "%c", lookup[intLevel % 26] );
+		new letter[2]
+		formatex( letter, 1, "%c", g_LightLookup[ intLevel ] );
+
 		set_lights( letter );
-		notify( 0, "[DZ] Baselights have been updated to %d/26", intLevel );
+		g_CurrentLightLevel = intLevel
+
+		notify( 0, "[DZ] Baselights have been updated to %i/26", intLevel );
 	}
 }
-
 // --------------------------------------------------------------------------------------
 // Commands
 
@@ -532,12 +541,32 @@ public DelayLoad(id)
 	}
 	
 	g_UserLoaded[id] = 1
+	set_task( 5.0, "fixLights" );
+
+	tse_createweap()
 	
 	return PLUGIN_HANDLED
 }
 
+public fixLights()
+{
+	// HACK!
+	// Everytime a client joins, his light flags are going to be messed up. Reset engine light level to fix the "flashing" bug
+	new letter[2]
+	formatex( letter, 1, "%c", g_LightLookup[ g_CurrentLightLevel ] );
+
+	if( g_CurrentLightLevel <= 0 || g_CurrentLightLevel >= 26 )
+		set_lights( "#OFF" );
+	else
+		set_lights( letter );
+
+	server_print( "[DZ] Applying lighting value of '%s' (%i)", letter, g_CurrentLightLevel );
+}
 public client_disconnected(id)
 {
+	.
+
+
 	g_UserLoaded[id] = 0
 	g_UserShowMessage[id] = 0
 	
@@ -601,13 +630,28 @@ RenderHUD()
 		new LightLevel = get_pcvar_num(p_ChangeLights);
 		switch(++g_TimePeriod)
 		{
-			case 1: if(LightLevel) set_lights("h");
-			case 2: if(LightLevel) set_lights("f");
+			case 1:
+			{			
+				if(LightLevel) { 
+				set_lights("h") 
+				g_CurrentLightLevel = 8 
+				}
+			}
+			case 2: 
+			{
+				if(LightLevel) { 
+					set_lights("f") 
+					g_CurrentLightLevel = 6 
+				}
+			}
 			case 3:
 			{
 				// Latest time. Bonus Zombie
 				if(LightLevel)
+				{					
 					set_lights("c");
+					g_CurrentLightLevel = 3
+				}
 				
 				//g_BonusZombie = GetRandomBot();
 				
