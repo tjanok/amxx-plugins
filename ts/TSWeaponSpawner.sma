@@ -14,6 +14,7 @@
 */
 
 #include <amxmodx>
+#include <amxmisc>
 #include <nvault>
 #include <fakemeta>
 #include <engine> // find_sphere_class
@@ -104,7 +105,7 @@ public plugin_init()
 {
 	register_plugin( "TS Weapon Spawns","1.0", "TJ Drak" );
 
-    register_clcmd( "amx_ts_addwpn", "cmdSpawnWpn", ADMIN_BAN, "<ammo> <extra> <save (0/1)> - adds gun to wall" );
+    register_clcmd( "amx_ts_addwpn", "cmdSpawnWpn", ADMIN_BAN, "<ammo> <extra> - adds gun to wall" );
     register_clcmd( "amx_ts_delwpn", "cmdRemoveWpn", ADMIN_BAN, "removes the nearest weapon spawn near you" );
     register_clcmd( "amx_ts_listweapons", "cmdListWeapons", ADMIN_BAN, "prints a list of all weapon names with their ids" );
 
@@ -116,6 +117,35 @@ public plugin_init()
 
 public cmdSpawnWpn( id, level, cid )
 {
+	if( !cmd_access( id, level, cid, 3 ) )
+		return PLUGIN_HANDLED
+	
+	new WeaponID[256],Ammo[33],Flags[33],Float:plOrigin[3]
+	pev(id,pev_origin,plOrigin);
+	
+	read_argv(1,WeaponID,255);
+	read_argv(2,Ammo,32);
+	read_argv(3,Flags,32);
+
+	new const IWeaponID = str_to_num(WeaponID);
+	
+	if(IWeaponID == 2 || IWeaponID == 10 || IWeaponID == 16 || IWeaponID == 30 || IWeaponID > 36)
+	{
+		client_print(id,print_console,"[DRP] Invalid WeaponID");
+		return PLUGIN_HANDLED
+	}
+	
+	new SQLOrigin[3]
+	FVecIVec(plOrigin,SQLOrigin);
+	
+	new Ent = ts_weaponspawn(WeaponID,"15",Ammo,Flags,plOrigin);
+
+	if( is_valid_ent( Ent ) ) {
+		writeVaultWeapon( IWeaponID, str_to_num( Ammo ), str_to_num( Flags ), plOrigin )
+		client_print( id, print_console, "[TS Weapon Spawner] Weapon created" );
+	}
+	
+	return PLUGIN_HANDLED
 }
 
 public cmdRemoveWpn( id, level, cid )
@@ -130,9 +160,6 @@ public spawnWeapons()
 {
     spawnVaultWeapons();
     server_print( "[TS Weapon Spawners] Loading %i weapons from storage", gVaultWeaponCount );
-
-    new Float:o[3]
-    writeVaultWeapon( 1, 20, 200, o );
 }
 
 getVaultWeaponCount()
@@ -183,38 +210,54 @@ spawnVaultWeapons()
         new key[128]
         new value[128]
 
-        for( new i = 0; i < gVaultWeaponCount; i++ )
+        for( new i = 0; i <= gVaultWeaponCount; i++ )
         {
             formatex( key, 127, "%s-%i", gMapName, i );
+			server_print("grabbing jkey: %s", key );
             
             new strLen = nvault_get( gVaultFile, key, value, 127 );
+			server_print("Total string: %s", value );
+
             if( strLen > 0 )
             {
                 new index = 0;
                 new phase = 0;
-                new wpnId, clip, attachments, Float:origin[3]
+                new weaponId[12], clip[12], attachments[12], Float:origin[3]
 
                 while( index != -1 ) 
                 {
                     new arg[33]
                     index = argparse( value, index, arg, 32 );
+
                     switch( phase ) 
                     {
                         case 0: {
-                            wpnId = str_to_num( arg ); 
+							copy( weaponId, 11, arg );
                         }
                         case 1: {
-                            clip = str_to_num( arg ); 
+                            copy( clip, 11, arg );
                         }
                         case 2: {
-                            attachments = str_to_num( arg ); 
+                            copy( attachments, 11, arg );
                         }
                         case 3: {
                             origin[0] = str_to_float( arg ); 
                         }
+						case 4: {
+                            origin[1] = str_to_float( arg ); 
+                        }
+						case 5: {
+                            origin[2] = str_to_float( arg ); 
+                        }
                     }
                     phase++
                 }
+
+				if( origin[0] != 0.0 && origin[1] != 0.0 && origin[2] != 0.0 ) {
+					new ent = ts_weaponspawn( weaponId, "0", clip, attachments, origin );
+					server_print("%d",is_valid_ent(ent))
+				}
+					
             }
         }
         nvault_close( gVaultFile );
@@ -350,7 +393,7 @@ public _SpawnWeapon2(id,Menu,Item)
 			
 			menu_destroy(Menu);
 			
-			new Ent = ts_weaponspawn(szWeaponID,"15","100",szFlags,plOrigin,0);
+			new Ent = ts_weaponspawn(szWeaponID,"15","100",szFlags,plOrigin);
 			if(Ent)
 				client_print(id,print_chat,"[DRP] Created Weapon.");
 			else
@@ -385,44 +428,6 @@ public _SpawnWeapon2(id,Menu,Item)
 }
 	
 /*==================================================================================================================================================*/
-public CmdSpawnWpn(id,level,cid)
-{
-
-	new WeaponID[256],Ammo[33],Flags[33],Save[33],Float:plOrigin[3]
-	pev(id,pev_origin,plOrigin);
-	
-	read_argv(1,WeaponID,255);
-	read_argv(2,Ammo,32);
-	read_argv(3,Flags,32);
-	read_argv(4,Save,32);
-
-	new const IWeaponID = str_to_num(WeaponID);
-	
-	if(IWeaponID == 2 || IWeaponID == 10 || IWeaponID == 16 || IWeaponID == 30 || IWeaponID > 36)
-	{
-		client_print(id,print_console,"[DRP] Invalid WeaponID");
-		return PLUGIN_HANDLED
-	}
-	
-	new SQLOrigin[3]
-	FVecIVec(plOrigin,SQLOrigin);
-	
-	new Ent = ts_weaponspawn(WeaponID,"15",Ammo,Flags,plOrigin,0);
-	
-	if(!str_to_num(Save))
-		return PLUGIN_HANDLED
-	
-	new Data[1]
-	Data[0] = Ent
-	
-	//format(WeaponID,255,"INSERT INTO %s (WeaponID,Clips,Flags,X,Y,Z) VALUES ('%d','%d','%s','%d','%d','%d')",g_WeaponTable,IWeaponID,str_to_num(Ammo),Flags,SQLOrigin[0],SQLOrigin[1],SQLOrigin[2]);
-	//SQL_ThreadQuery(g_SqlHandle,"IgnoreHandle",WeaponID);
-	
-	//format(WeaponID,255,"SELECT * FROM %s ORDER BY `SQLKey` DESC",g_WeaponTable);
-	//SQL_ThreadQuery(g_SqlHandle,"SetSQLPev",WeaponID,Data,1);
-	
-	return PLUGIN_HANDLED
-}
 public CmdRemoveOrigin(id,level,cid)
 {
 	
@@ -501,7 +506,7 @@ public RemoveWeapons()
 }
 
 /*==================================================================================================================================================*/
-ts_weaponspawn(const weaponid[],const duration[],const extraclip[],const spawnflags[],const Float:Origin[3] = {0.0,0.0,0.0},SQLKey)
+ts_weaponspawn( const weaponid[], const duration[], const extraclip[], const spawnflags[], const Float:Origin[3] = {0.0,0.0,0.0} )
 {
 	new ent = engfunc(EngFunc_CreateNamedEntity,engfunc(EngFunc_AllocString,"ts_groundweapon"))
 	if(!ent)
