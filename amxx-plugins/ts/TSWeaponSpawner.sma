@@ -1,20 +1,17 @@
 /*
-* DRPWeapons.sma
+* TSWeaponSpawner.sma
 * Author(s): Drak
 * -------------------------------
-* Desc:
-* Loads the weapons spawns from the Database.
-* Removes the weapons on map start. (Enabled via CVar)
-* Commands to spawn TS Weapons (Optional save to Database)
-* 
-* Changelog:
-* 6/12/08:
-* Moved code around abit.
-* Small optimizations
-
-TODO
-Indexs don't reorder when removing from the vault
-probably just loop to a maximum number and check if the vault key exists
+* Adds and saves weapons entities for The Specialists v3.0
+* -------------------------------
+* Commands (requires ADMIN_BAN)
+* amx_ts_addwpn <weaponid> <ammo> <spawnflags> <save> - Adds a weapon where you are currently looking. You can also pass spawn flags to attachments
+* amx_ts_addwpnmenu - Opens a menu, easier to managing spawning weapons
+* amx_ts_delwpn - Deletes the nearest weapon spawn, which also removes it from the vault if saved.
+* amx_ts_listweapons - Dumps a list of weapon names with their associated id
+* -------------------------------
+* Convars
+* amx_ts_removewpns 1/0 - If enabled, will remove all the default weapon entities on the loaded map
 */
 
 #include <amxmodx>
@@ -24,6 +21,7 @@ probably just loop to a maximum number and check if the vault key exists
 #include <engine> // find_sphere_class
 
 #define SEARCH_RADIUS 50.0
+#define MAXIMUM_ENTRIES 100
 
 #define TSA_SILENCER			1
 #define TSA_LASERSIGHT			2
@@ -50,10 +48,50 @@ enum {
 	TSE_FM_FREEFULL
 };
 
+// Weapon names
+new gWeaponNames[37][] = {
+	"Glock 18",
+	"Beretta 92F",
+	"Uzi",
+	"M3",
+	"M4A1",
+	"MP5D",
+	"MP5K",
+	"Akimbo Beretta",
+	"MK23",
+	"Akimbo MK23",
+	"USAS",
+	"Degale",
+	"AK47",
+	"Five-Seven",
+	"Aug",
+	"Akimbo Uzi",
+	"Skorpion",
+	"M82A1 Sniper",
+	"MP7",
+	"Spas",
+	"Golden Colts",
+	"Glock 20",
+	"UMP",
+	"M61 Grenade",
+	"Seal Knife",
+	"Mossberg",
+	"M16A4",
+	"MK1 Ruger",
+	"C4",
+	"A57",
+	"Raging Bull Revolver",
+	"M60E3",
+	"Sawed Off",
+	"Katana",
+	"Combat Knife",
+	"Contender",
+	"Akimbo Skorpion"
+}
 // Weapons
 enum {
 	TSE_WPN_GLOCK18 = 1,
-	TSE_WPN_92F,
+	TSE_WPN_92F_BERETTA,
 	TSE_WPN_UZI,
 	TSE_WPN_M3,
 	TSE_WPN_M4A1,
@@ -91,13 +129,13 @@ enum {
 	TSE_WPN_ASKORP
 };
 
-
 new const gVaultFilename[] = "tsweaponspawns"
 new gVaultFile
 new gVaultWeaponCount
 
 new gMenuAttachments[33]
 new gMenuWeaponID[33]
+new gMenuSaveToVault[33]
 
 new gWeaponMenu
 
@@ -116,7 +154,7 @@ public plugin_init()
 {
 	register_plugin( "TS Weapon Spawns","1.0", "TJ Drak" );
 
-	register_clcmd( "amx_ts_addwpn", "cmdSpawnWpn", ADMIN_BAN, "<ammo> <extra> - adds gun to wall" );
+	register_clcmd( "amx_ts_addwpn", "cmdSpawnWpn", ADMIN_BAN, "<wpnid> <ammo> <extra> <save 1/0> - adds gun to wall" );
 	register_clcmd( "amx_ts_addwpnmenu", "cmdSpawnWpnMenu", ADMIN_BAN, "opens the weapon spawn menu" );
 	register_clcmd( "amx_ts_delwpn", "cmdRemoveWpn", ADMIN_BAN, "removes the nearest weapon spawn near you" );
 	register_clcmd( "amx_ts_listweapons", "cmdListWeapons", ADMIN_BAN, "prints a list of all weapon names with their ids" );
@@ -134,6 +172,7 @@ public cmdSpawnWpnMenu(id, level, cid )
 
 	gMenuAttachments[id] = 0
 	gMenuWeaponID[id] = 0
+	gMenuSaveToVault[id] = 0
 
 	menu_display( id, gWeaponMenu );
 	client_print( id, print_console, "[TS Weapon Spawner] Menu Opened..." );
@@ -165,11 +204,12 @@ public cmdSpawnWpn( id, level, cid )
 	new ent = ts_weaponspawn( wpnId, "15", extraAmmo, spawnFlags, origin );
 
 	if( is_valid_ent( ent ) ) {
+		client_print( id, print_console, "[TS Weapon Spawner] Weapon created" );
+
 		if( str_to_num( saveSpawn ) == 1 ) {
 			writeVaultWeapon( invalidIds, str_to_num( extraAmmo ), str_to_num( spawnFlags ), origin, ent )
 			client_print( id, print_console, "[TS Weapon Spawner] Saving..." );
 		}
-		client_print( id, print_console, "[TS Weapon Spawner] Weapon created" );
 	}
 	
 	return PLUGIN_HANDLED
@@ -204,6 +244,42 @@ public cmdRemoveWpn( id, level, cid )
 
 public cmdListWeapons( id, level, cid )
 {
+	if( !cmd_access( id, level, cid, 0 ) )
+		return PLUGIN_HANDLED
+
+	new names[1024]
+	new temp[128]
+
+	for( new i = 0; i < sizeof( gWeaponNames ); i++ )
+	{
+		formatex( temp, 126, "%i. %s", i+1, gWeaponNames[i] );
+
+		add( names, 1023, temp );
+		add( names, 1023, "^n" );
+
+		// delay the output to avoid any overflows
+		temp[127] = id
+		set_task( i * 0.01, "printWeaponLine", i+random(1024), temp, 128 );
+	}
+
+	names[1023] = id
+	set_task( 1.0, "showWeaponMOTD", 0, names, 1024 );
+
+	return PLUGIN_HANDLED
+}
+
+public showWeaponMOTD( const motd[1024] )
+{
+	new const id = motd[1023]
+	if( is_user_connected( id ) )
+		show_motd( id, motd, "TS Weapons" );
+}
+
+public printWeaponLine( const line[128] )
+{
+	new const id = line[127]
+	if( is_user_connected( id ) )
+		client_print( id, print_console, line );
 }
 
 removeAllWeapons()
@@ -220,49 +296,52 @@ removeAllWeapons()
 
 public spawnWeapons()
 {
-    spawnVaultWeapons();
-    server_print( "[TS Weapon Spawners] Loading %i weapons from storage", gVaultWeaponCount );
+	spawnVaultWeapons();
+	server_print( "[TS Weapon Spawner] Loading %i weapons from storage", gVaultWeaponCount );
+
+	if( gVaultWeaponCount >= MAXIMUM_ENTRIES )
+		server_print("[TS Weapon Spawner] Maximum number of saved weapons has been reached. %i", MAXIMUM_ENTRIES );
 }
 
 getVaultWeaponCount()
 {
-    new count = 0;
-    new key[128]
+	new count = 0;
+	new key[128]
 
-    formatex( key, 127, "%s-numberofspawns", gMapName );
-    gVaultFile = nvault_open( gVaultFilename );
-    
-    if( gVaultFile != INVALID_HANDLE )
-        count = nvault_get( gVaultFile, key );
+	formatex( key, 127, "%s-numberofspawns", gMapName );
+	gVaultFile = nvault_open( gVaultFilename );
+	
+	if( gVaultFile != INVALID_HANDLE )
+		count = nvault_get( gVaultFile, key );
 
-    nvault_close( gVaultFile );
-    return count
+	nvault_close( gVaultFile );
+	return count
 }
 
 writeVaultWeapon( wpnId, clip, attachments, origin[3], ent )
 {
-    gVaultFile = nvault_open( gVaultFilename )
-    if( gVaultFile != INVALID_HANDLE )
-    {
-        gVaultWeaponCount++
+	gVaultFile = nvault_open( gVaultFilename )
+	if( gVaultFile != INVALID_HANDLE )
+	{
+		gVaultWeaponCount++
 
-        new value[128]
-        new key[128]
+		new value[128]
+		new key[128]
 
-        formatex( key, 127, "%s-%i", gMapName, gVaultWeaponCount );
-        formatex( value, 127, "%i %i %i %i %i %i", wpnId, clip, attachments, origin[0], origin[1], origin[2] );
+		formatex( key, 127, "%s-%i", gMapName, gVaultWeaponCount );
+		formatex( value, 127, "%i %i %i %i %i %i", wpnId, clip, attachments, origin[0], origin[1], origin[2] );
 
-        nvault_pset( gVaultFile, key, value );
+		nvault_pset( gVaultFile, key, value );
 
-        formatex( key, 127, "%s-numberofspawns", gMapName );
-        formatex( value, 127, "%i", gVaultWeaponCount );
+		formatex( key, 127, "%s-numberofspawns", gMapName );
+		formatex( value, 127, "%i", gVaultWeaponCount );
 
-        nvault_pset( gVaultFile, key, value );
-        nvault_close( gVaultFile );
+		nvault_pset( gVaultFile, key, value );
+		nvault_close( gVaultFile );
 
 		if( is_valid_ent( ent ) )
 			set_pev( ent, pev_iuser2, gVaultWeaponCount );
-    }
+	}
 }
 
 removeVaultWeapon( ent )
@@ -296,58 +375,68 @@ spawnVaultWeapons()
 
 	gVaultWeaponCount = getVaultWeaponCount();
 	gVaultFile = nvault_open( gVaultFilename )
-    
-    if( gVaultFile != INVALID_HANDLE )
-    {
-        new key[128]
-        new value[128]
 
-        for( new i = 0; i <= gVaultWeaponCount; i++ )
-        {
-            formatex( key, 127, "%s-%i", gMapName, i );
+	if( gVaultFile != INVALID_HANDLE )
+	{
+		new key[128]
+		new value[128]
+		new spawnCount = 0
 
+		for( new i = 0; i <= MAXIMUM_ENTRIES; i++ )
+		{
+			formatex( key, 127, "%s-%i", gMapName, i );
 			new strLen = nvault_get( gVaultFile, key, value, 127 );
+
 			if( strLen > 0 )
 			{
 				new index = 0;
 				new phase = 0;
 				new wpnId[12], clip[12], attachments[12], origin[3]
 
-				while( index != -1 ) 
-                {
-                    new arg[33]
-                    index = argparse( value, index, arg, 32 );
+				spawnCount++
 
-                    switch( phase ) 
-                    {
-                        case 0: {
-							copy( wpnId, 11, arg );
-                        }
-                        case 1: {
-                            copy( clip, 11, arg );
-                        }
-                        case 2: {
-                            copy( attachments, 11, arg );
-                        }
-                        case 3: {
-                            origin[0] = str_to_num( arg );
-                        }
+				while( index != -1 ) 
+				{
+					new arg[33]
+					index = argparse( value, index, arg, 32 );
+
+					switch( phase ) 
+					{
+						case 0: {
+						copy( wpnId, 11, arg );
+						}
+						case 1: {
+						copy( clip, 11, arg );
+						}
+						case 2: {
+						copy( attachments, 11, arg );
+						}
+						case 3: {
+						origin[0] = str_to_num( arg );
+						}
 						case 4: {
-                            origin[1] = str_to_num( arg ); 
-                        }
+						origin[1] = str_to_num( arg ); 
+						}
 						case 5: {
-                            origin[2] = str_to_num( arg ); 
-                        }
-                    }
-                    phase++
-                }
+						origin[2] = str_to_num( arg ); 
+						}
+					}
+					phase++
+				}
 
 				if( origin[0] != 0 && origin[1] != 0 && origin[2] != 0 )
-					ts_weaponspawn( wpnId, "15", clip, attachments, origin, i );		
-            }
-        }
-        nvault_close( gVaultFile );
-    }
+					ts_weaponspawn( wpnId, "15", clip, attachments, origin, i );
+
+				if( spawnCount > gVaultWeaponCount )
+					break;		
+			}
+		}
+
+		if( spawnCount == gVaultWeaponCount )
+			server_print( "[TS Weapon Spawner] All weapons successfully spawned" );
+
+		nvault_close( gVaultFile );
+	}
 }
 
 /*==================================================================================================================================================*/
@@ -357,7 +446,7 @@ public _spawnWpnHandler( id, menu, item )
 		return PLUGIN_HANDLED
 	
 	new info[12], access
-	menu_item_getinfo( menu, item, access, info, 11, _,_ , access );
+	menu_item_getinfo( menu, item, access, info, 11,_ , _, access );
 	
 	new wpnId = str_to_num( info );
 	if( !wpnId || wpnId > 36 )
@@ -369,22 +458,26 @@ public _spawnWpnHandler( id, menu, item )
 	
 	new subMenu = menu_create( title, "_spawnWpnHandler2" );
 	
-	menu_additem(subMenu,"Silencer");
-	menu_additem(subMenu,"Lasersight");
-	menu_additem(subMenu,"Flashlight");
-	menu_additem(subMenu,"Scope");
-	menu_additem(subMenu,"Lay on Wall");
-	menu_addblank(subMenu,0);
-	menu_additem(subMenu,"Done");
-	menu_additem(subMenu,"Exit");
-	menu_setprop(subMenu,MPROP_EXIT,MEXIT_NEVER);
+	menu_additem( subMenu, "Silencer" );
+	menu_additem( subMenu, "Lasersight" );
+	menu_additem( subMenu, "Flashlight" );
+	
+	menu_additem( subMenu, "Scope" );
+	menu_additem( subMenu, "Lay on Wall" );
+	menu_additem( subMenu, "Save to Vault" );
+
+	menu_addblank( subMenu, 0 );
+
+	menu_additem( subMenu, "Done" );
+	menu_additem( subMenu, "Exit" );
+	menu_setprop( subMenu, MPROP_EXIT, MEXIT_NEVER ); 
 	
 	menu_display(id,subMenu);
 	return PLUGIN_HANDLED
 }
-public _spawnWpnHandler2(id,Menu,Item)
+public _spawnWpnHandler2( id, Menu, Item )
 {
-	if(Item == MENU_EXIT)
+	if( Item == MENU_EXIT )
 		return PLUGIN_HANDLED
 	
 	switch(Item)
@@ -461,6 +554,12 @@ public _spawnWpnHandler2(id,Menu,Item)
 		}
 		case 5:
 		{
+			gMenuSaveToVault[id] = !gMenuSaveToVault[id]
+			(gMenuSaveToVault[id]) ? 
+				menu_item_setname( Menu, Item, "Save to Vault *" ) : menu_item_setname( Menu, Item, "Save to Vault ");
+		}
+		case 6:
+		{
 			new origin[3]
 			get_user_origin( id, origin );
 			
@@ -470,23 +569,18 @@ public _spawnWpnHandler2(id,Menu,Item)
 			
 			menu_destroy(Menu);
 			
-			new Ent = ts_weaponspawn(szwpnId,"15","100",szFlags,origin);
-			if(Ent)
+			new ent = ts_weaponspawn(szwpnId,"15","100",szFlags,origin);
+			
+			if( is_valid_ent( ent ) )
 			{
-				client_print(id,print_chat,"[DRP] Created Weapon.");
-				writeVaultWeapon( gMenuWeaponID[id], 100, gMenuAttachments[id], origin, Ent );
-				//writeVaultWeapon( wpnId, clip, attachments, origin[3], ent )
-			}
-			else
-				client_print(id,print_chat,"[DRP] There was an error creating the weapon.");
-				
-			if(Ent)
-			{
+				client_print(id, print_chat, "[TS Weapon Spawner] Created TS Weapon Spawn" );
+				if( gMenuSaveToVault[id] )
+					writeVaultWeapon( gMenuWeaponID[id], 100, gMenuAttachments[id], origin, ent );
 			}
 			
 			return PLUGIN_HANDLED
 		}
-		case 6:
+		case 7:
 		{
 			menu_destroy(Menu);
 			return PLUGIN_HANDLED
@@ -500,43 +594,13 @@ public _spawnWpnHandler2(id,Menu,Item)
 buildWeaponMenu()
 {
 	gWeaponMenu = menu_create( "TS Weapon Spawner", "_spawnWpnHandler" );
-	menu_additem( gWeaponMenu, "Glock 18", "1" );
-	menu_additem( gWeaponMenu, "92F", "2" );
-	menu_additem( gWeaponMenu, "Uzi", "3" );
-	menu_additem( gWeaponMenu, "M3", "4" );
-	menu_additem( gWeaponMenu, "M4A1", "5" );
-	menu_additem( gWeaponMenu, "MP5SD", "6" );
-	menu_additem( gWeaponMenu, "MP5K", "7" );
-	menu_additem( gWeaponMenu, "Berettas", "8" );
-	menu_additem( gWeaponMenu, "MK23", "9" );
-	menu_additem( gWeaponMenu, "Akimbo MK23", "10" );
-	menu_additem( gWeaponMenu, "USAS", "11" );
-	menu_additem( gWeaponMenu, "Deagle", "12" );
-	menu_additem( gWeaponMenu, "AK47", "13" );
-	menu_additem( gWeaponMenu, "Five-Seven", "14" );
-	menu_additem( gWeaponMenu, "Aug", "15" );
-	menu_additem( gWeaponMenu, "Akimbo Uzi", "16" );
-	menu_additem( gWeaponMenu, "Skorpein", "17" );
-	menu_additem( gWeaponMenu, "M82A1", "18" );
-	menu_additem( gWeaponMenu, "MP7", "19" );
-	menu_additem( gWeaponMenu, "SPAS", "20" );
-	menu_additem( gWeaponMenu, "Golden Colts", "21" );
-	menu_additem( gWeaponMenu, "Glock20", "22" );
-	menu_additem( gWeaponMenu, "UMP", "23" );
-	menu_additem( gWeaponMenu, "M16 Grenade", "24" );
-	menu_additem( gWeaponMenu, "Combat Knife", "25" );
-	menu_additem( gWeaponMenu, "Mossberg", "26" );
-	menu_additem( gWeaponMenu, "M16A4", "27" );
-	menu_additem( gWeaponMenu, "MK1", "28" );
-	menu_additem( gWeaponMenu, "C4", "29" );
-	menu_additem( gWeaponMenu, "A57", "30" );
-	menu_additem( gWeaponMenu, "Raging Bull", "31" );
-	menu_additem( gWeaponMenu, "M60E3", "32" );
-	menu_additem( gWeaponMenu, "Sawed Off", "33" );
-	menu_additem( gWeaponMenu, "Katana", "34" );
-	menu_additem( gWeaponMenu, "Knife", "35" );
-	menu_additem( gWeaponMenu, "Contender", "36" );
-	menu_additem( gWeaponMenu, "Akimbo Skorpein", "37" );
+
+	new info[12]
+	for( new i = 0; i < sizeof( gWeaponNames ); i++ )
+	{
+		num_to_str( i+1, info, 11 );
+		menu_additem( gWeaponMenu, gWeaponNames[i], info );
+	}
 }
 /*==================================================================================================================================================*/
 ts_weaponspawn( const wpnId[], const duration[], const extraclip[], const spawnflags[], const Origin[3], vaultKey = 0 )
