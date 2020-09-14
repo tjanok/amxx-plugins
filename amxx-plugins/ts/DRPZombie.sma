@@ -249,7 +249,6 @@ public plugin_init()
 	// Commands
 	register_concmd( "dz_removebot", "cmdRemoveBot", ADMIN_BAN, "removes a zombie bot from the server" );
 	register_concmd( "dz_addbot", "cmdAddBot", ADMIN_BAN, "adds a zombie bot to the server" );
-	register_concmd( "dz_spawnwep", "cmdSpawnWeapon", ADMIN_BAN, "spawns the given weaponid at your location" );
 	//register_srvcmd("DZ_PerkLevel","CmdUpdatePerk",_,"<perk> <level> - set's what level you need to be (or higher) to have this perk");
 	//register_concmd("DZ_PerkLevel","CmdUpdatePerk",_,"<perk> <level> - set's what level you need to be (or higher) to have this perk");
 	//register_srvcmd("DZ_AddBot","CmdAddBot",_,"- adds a bot to the zombie team. use this instead of ^"addbot^"");
@@ -542,8 +541,6 @@ public DelayLoad(id)
 	
 	g_UserLoaded[id] = 1
 	set_task( 5.0, "fixLights" );
-
-	tse_createweap()
 	
 	return PLUGIN_HANDLED
 }
@@ -564,9 +561,6 @@ public fixLights()
 }
 public client_disconnected(id)
 {
-	.
-
-
 	g_UserLoaded[id] = 0
 	g_UserShowMessage[id] = 0
 	
@@ -738,6 +732,18 @@ RenderHUD()
 		UserHealth = entity_get_float(idx,EV_FL_health);
 		if(UserHealth < 100.0)
 			entity_set_float(idx,EV_FL_health,UserHealth + 1.0);
+
+		if( random( 50 ) > 35 && g_TimePeriod >= 3 ) {
+			new ply = getRandomHuman();
+			if( ply && is_user_alive( ply ) == true )
+			{
+				new name[33]
+				get_user_name( ply, name, 32 );
+
+				server_cmd( "monster headcrab %s", name )
+				server_print( "[TS Zombies] Spawning a MonsterMod entity.." );
+			}
+		}
 		
 		set_hudmessage(HUD_RED,HUD_GREEN,HUD_BLUE,HUD_X,HUD_Y,_,_,99.0,_,_,1);
 		
@@ -747,6 +753,7 @@ RenderHUD()
 		show_hudmessage(idx,g_Cache);
 	}
 }
+
 // --------------------------------------------------------------------------------------
 public Message_TS50(msg_id,msg_dest,msg_entity)
 {
