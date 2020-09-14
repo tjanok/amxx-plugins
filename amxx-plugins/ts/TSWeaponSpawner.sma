@@ -74,7 +74,7 @@ new gWeaponNames[37][] = {
 	"Glock 20",
 	"UMP",
 	"M61 Grenade",
-	"Seal Knife",
+	"Combat Knife",
 	"Mossberg",
 	"M16A4",
 	"MK1 Ruger",
@@ -84,7 +84,7 @@ new gWeaponNames[37][] = {
 	"M60E3",
 	"Sawed Off",
 	"Katana",
-	"Combat Knife",
+	"Seal Knife",
 	"Contender",
 	"Akimbo Skorpion"
 }
@@ -306,35 +306,38 @@ public spawnWeapons()
 getVaultWeaponCount()
 {
 	new count = 0;
-	new key[128]
-
-	formatex( key, 127, "%s-numberofspawns", gMapName );
 	gVaultFile = nvault_open( gVaultFilename );
-	
-	if( gVaultFile != INVALID_HANDLE )
-		count = nvault_get( gVaultFile, key );
 
-	nvault_close( gVaultFile );
+	if( gVaultFile != INVALID_HANDLE )
+	{
+		new key[128]
+		new value[1], timestamp
+
+		for( new i = 1; i < MAXIMUM_ENTRIES; i++ )
+		{
+			formatex( key, 127, "%s-%i", gMapName, i );
+			if( nvault_lookup( gVaultFile, key, value, 1, timestamp ) == 1) 
+				count++
+		}
+
+		nvault_close( gVaultFile );
+	}
+
 	return count
 }
 
 writeVaultWeapon( wpnId, clip, attachments, origin[3], ent )
 {
-	gVaultFile = nvault_open( gVaultFilename )
+	new index = getNextFreeIndex();
+	gVaultFile = nvault_open( gVaultFilename );
+
 	if( gVaultFile != INVALID_HANDLE )
 	{
-		gVaultWeaponCount++
-
 		new value[128]
 		new key[128]
 
-		formatex( key, 127, "%s-%i", gMapName, gVaultWeaponCount );
+		formatex( key, 127, "%s-%i", gMapName, index );
 		formatex( value, 127, "%i %i %i %i %i %i", wpnId, clip, attachments, origin[0], origin[1], origin[2] );
-
-		nvault_pset( gVaultFile, key, value );
-
-		formatex( key, 127, "%s-numberofspawns", gMapName );
-		formatex( value, 127, "%i", gVaultWeaponCount );
 
 		nvault_pset( gVaultFile, key, value );
 		nvault_close( gVaultFile );
@@ -342,6 +345,28 @@ writeVaultWeapon( wpnId, clip, attachments, origin[3], ent )
 		if( is_valid_ent( ent ) )
 			set_pev( ent, pev_iuser2, gVaultWeaponCount );
 	}
+}
+
+getNextFreeIndex()
+{
+	gVaultFile = nvault_open( gVaultFilename );
+	
+	if( gVaultFile != INVALID_HANDLE )
+	{
+		new key[128]
+		new value[1], timestamp
+
+		for( new i = 1; i < MAXIMUM_ENTRIES; i++ )
+		{
+			formatex( key, 127, "%s-%i", gMapName, i );
+			if( nvault_lookup( gVaultFile, key, value, 1, timestamp ) == 0)
+				return i
+		}
+
+		nvault_close( gVaultFile );
+	}
+
+	return -1;
 }
 
 removeVaultWeapon( ent )
@@ -358,14 +383,6 @@ removeVaultWeapon( ent )
 	if( gVaultFile != INVALID_HANDLE )
 	{
 		nvault_remove( gVaultFile, key );
-
-		gVaultWeaponCount--
-		formatex( key, 127, "%s-numberofspawns", gMapName  );
-
-		new value[33]
-		formatex( value, 32, "%i", gVaultWeaponCount );
-
-		nvault_pset( gVaultFile, key, value );
 		nvault_close( gVaultFile );
 	}
 }
@@ -449,7 +466,7 @@ public _spawnWpnHandler( id, menu, item )
 	menu_item_getinfo( menu, item, access, info, 11,_ , _, access );
 	
 	new wpnId = str_to_num( info );
-	if( !wpnId || wpnId > 36 )
+	if( !wpnId || wpnId > 37 )
 		return PLUGIN_HANDLED
 	
 	new title[64]
@@ -575,7 +592,10 @@ public _spawnWpnHandler2( id, Menu, Item )
 			{
 				client_print(id, print_chat, "[TS Weapon Spawner] Created TS Weapon Spawn" );
 				if( gMenuSaveToVault[id] )
+				{
 					writeVaultWeapon( gMenuWeaponID[id], 100, gMenuAttachments[id], origin, ent );
+					client_print( id, print_chat, "[TS Weapon Spawner] Saved to vault..." );
+				}
 			}
 			
 			return PLUGIN_HANDLED
