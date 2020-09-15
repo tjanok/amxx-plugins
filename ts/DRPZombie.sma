@@ -87,6 +87,7 @@ new p_KnockBack
 new p_PlayerHealth
 new p_SpawnGodTime
 new p_StartWeapon
+new p_MonsterMod
 
 // TS Weapons
 enum
@@ -141,6 +142,7 @@ new const g_ZombieNoises[3][33] =
 }
 
 new g_ZombieTalkDelay
+new g_Monsters[12][33]
 
 public plugin_precache()
 {
@@ -163,6 +165,7 @@ public plugin_precache()
 	p_KnockBack 		= register_cvar( "dz_knockforce", "8500" );
 	p_SpawnGodTime		= register_cvar( "dz_postspawngod", "5" );
 	p_StartWeapon		= register_cvar( "dz_startwpn", "22" );
+	p_MonsterMod		= register_cvar( "dz_monstermod", "zombie headcrab" );
 
 	hook_cvar_change( p_BaseLights, "cvar_baseLightsChanged" );
 	
@@ -226,6 +229,22 @@ public plugin_precache()
 	{
 		formatex( g_Cache, 255, "models/player/%s/%s.mdl", g_ZombieModels[Count], g_ZombieModels[Count] );
 		precache_model( g_Cache );
+	}
+
+	//
+	get_pcvar_string( p_MonsterMod, g_Cache, 255 );
+	if( g_Cache[0] )
+	{
+		new index = 0;
+		new count = 0
+		new monster[33]
+
+		while( index != - 1 )
+		{
+			index = argparse( g_Cache, index, monster, 32 );
+			if( monster[0] ) 
+				copy(g_Monsters[count++], 32, monster );
+		}
 	}
 }
 
