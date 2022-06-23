@@ -1,5 +1,6 @@
 *.amxx
 *.amx
+*.code-workspace
 /compilers
 /Compilers
 /compiled
