@@ -1,12 +1,6 @@
 ////////////////////////////////////////////////////
-// DZombie.sma
+// DZombieMod.sma
 // --------------------------
-// Zombie MOD for TS - Author: Drak
-// This is kinda quick and dirty. I wasn't planning on releasing this, but I kept as much settings/configs un-hardcoded as possable
-// The only thing that would be difficult to change is the max level of 30.
-// -------------
-// Some of the ideas / features are from stupok69's ZombieMOD for TS
-// Don't accuse me of "stealing" or "copying" anybody. This was released free of charge, and he get's proper credit
 
 #include <amxmodx>
 #include <amxmisc>
@@ -15,45 +9,54 @@
 #include <engine>
 #include <nvault>
 #include <hamsandwich>
-#include <tse>
+#include <tsfun>
 
 new const g_GameName[] = "TS Zombies"
+new const g_Version[] = "0.1"
+new const g_ModName[] = "DZombies"
 
 new g_ZombieTeamName[33]
 new g_HumanTeamName[33]
 
-#define HUD_RED 45
-#define HUD_GREEN 164
-#define HUD_BLUE 232
-#define HUD_X -1.0
-#define HUD_Y 1.0
-
 #define MAX_ZOMBIE_MODELS 5
 #define MAX_ZOMBIE_HP 250
 #define MAX_PLAYER_HP 250
-#define MAX_ZOMBIE_SKILL 5.0
-#define BOSS_ZOMBIE_SKILL 9.9
+#define MAX_LEVEL 100
 
-// End Settings
-
-#define NUM_OF_PERKS 1
+// Perks
+// -----------------------------------------------------
+#define NUM_OF_PERKS 3
 #define PW_HEALTHBOOST (1<<0)
 #define PW_HEALTHREGEN (1<<2)
+#define PW_NIGHTVISION (1<<4)
 
-new g_PerkNeededLevel[NUM_OF_PERKS + 1]
+new const g_PerkNames[NUM_OF_PERKS][64] = {
+	"Health Boost Level 1",
+	"Health Regeneration Level 1",
+	"Nightvision"
+}
+
+new const g_PerkNamesId[NUM_OF_PERKS][33] = {
+	"hp_boost1",
+	"hp_regen1",
+	"nvision"
+}
+// -----------------------------------------------------
 
 new g_VaultFile
+
 new g_Cache[256]
 new g_MaxPlayers
 
 // Player saved variables
-new g_UserFrags[33]
+//new g_UserFrags[33]
 new g_UserPerks[33]
 new g_UserLoaded[33]
 new g_UserWeaponID[33]
 new g_UserShowMessage[33]
 new g_UserWeapons[33][45]
 new g_UserGodtime[33]
+new g_UserPlayTime[33]
 
 new const g_Time[4][33] =
 {
@@ -70,14 +73,20 @@ new g_CurrentLightLevel
 new const g_LightLookup[] = "abcdefghijklmnopqrstuvwxyz";
 
 new g_BonusZombie
+
+// Menus
 new g_MainMenu
 new g_GunMenu
+new g_SpawnMenu
 
 new g_ZombieModels[MAX_ZOMBIE_MODELS][33]
 new g_ZombieModelsNum
 new g_ZombieCount
+new g_HumanBotCount
 
+// ConVars
 new p_Zombies
+new p_Humans
 new p_TimePeriod
 new p_ClientZombies
 new p_ZombieHealth
@@ -88,6 +97,17 @@ new p_PlayerHealth
 new p_SpawnGodTime
 new p_StartWeapon
 new p_MonsterMod
+new p_MonsterModEnabled
+new p_MaxSelectPerks
+new p_MaximumFrags
+new p_HudColorR
+new p_HudColorG
+new p_HudColorB
+new p_HudPosX
+new p_HudPosY
+
+// Game Messages
+new g_msgScreenFade
 
 // TS Weapons
 enum
@@ -132,9 +152,57 @@ enum
 	TSW_ASKORPION
 }
 
-#define TSX_MAX_WEAPONID 45
+#define TSX_MAX_WEAPONID 37
+new gWeaponNames[TSX_MAX_WEAPONID][] = {
+	"Glock 18",
+	"Beretta 92F",
+	"Uzi",
+	"M3",
+	"M4A1",
+	"MP5D",
+	"MP5K",
+	"Akimbo Beretta",
+	"MK23",
+	"Akimbo MK23",
+	"USAS",
+	"Degale",
+	"AK47",
+	"Five-Seven",
+	"Aug",
+	"Akimbo Uzi",
+	"Skorpion",
+	"M82A1 Sniper",
+	"MP7",
+	"Spas",
+	"Golden Colts",
+	"Glock 20",
+	"UMP",
+	"M61 Grenade",
+	"Combat Knife",
+	"Mossberg",
+	"M16A4",
+	"MK1 Ruger",
+	"C4",
+	"A57",
+	"Raging Bull Revolver",
+	"M60E3",
+	"Sawed Off",
+	"Katana",
+	"Seal Knife",
+	"Contender",
+	"Akimbo Skorpion"
+}
+
+new gWeaponRequiredLevel[TSX_MAX_WEAPONID]
 
 new const g_ZombieNoises[3][33] = 
+{
+	"sound/nihilanth/nil_alone.wav",
+	"sound/nihilanth/nil_die.wav",
+	"sound/nihilanth/nil_comes.wav"
+}
+
+new const g_ZombieNoisesEmitting[3][33] = 
 {
 	"nihilanth/nil_alone.wav",
 	"nihilanth/nil_die.wav",
@@ -142,20 +210,94 @@ new const g_ZombieNoises[3][33] =
 }
 
 new g_ZombieTalkDelay
+
+// when did a zombie last seen a player (used to "unstick" bots)
+new Float:g_ZombieLastSeenPlayer[33]
+
 new g_Monsters[12][33]
+new g_MonstersCount
+
+loadWeaponLevels( const file[] )
+{
+	new f = fopen( file, "r" );
+	if( !f )
+		return
+
+	new index = 0
+
+	while( !feof( f ) )
+	{
+		fgets( f, g_Cache, sizeof( g_Cache ) - 1 );
+
+		if( g_Cache[0] == '/' || !g_Cache[0] )
+			continue
+
+		if( containi( g_Cache, gWeaponNames[index] ) ) {
+			new weaponName[33], weaponLevel[3]
+			parse( g_Cache, weaponName, 32, weaponLevel, 2 );
+
+			if( !weaponName[0] || !weaponLevel[0] )
+				continue
+
+			new lvl = str_to_num( weaponLevel );
+			gWeaponRequiredLevel[index] = lvl
+			index++
+		}
+	}
+
+	fclose( f );
+}
+
+public plugin_cfg()
+{
+	new configDir[256]
+	get_datadir( configDir, 255 );
+    
+    new mapName[33]
+    get_mapname( mapName, 32 );
+
+    format( configDir, 255, "%s/dzombies", configDir );
+
+    if( !dir_exists( configDir ) )
+        mkdir( configDir );
+
+    format( configDir, 255, "%s/weapon_levels.txt", configDir );
+
+    if( !file_exists( configDir ) )
+        error( "unable to locate weapon file '%s'", true, configDir );
+
+	loadWeaponLevels( configDir );
+	buildWeaponMenu();
+
+	// Game Messages
+	// Must be called here, or could return 0
+	g_msgScreenFade = get_user_msgid( "ScreenFade" );
+}
 
 public plugin_precache()
 {
 	g_VaultFile = nvault_open( "DZombieVault" );
 	if(g_VaultFile == INVALID_HANDLE)
-		error( "unable to open nvault file", true );
-	
+		error( "unable to open nvault file, unable to continue", true );
+
 	g_MaxPlayers = get_maxplayers();
 	
+	// precache_generic() instead - can't use emit_sound()
 	for( new Count; Count < sizeof(g_ZombieNoises); Count++ )
-		precache_sound(g_ZombieNoises[Count]);
+	{
+		formatex( g_Cache, sizeof( g_Cache ) - 1, "sounds/%s", g_ZombieNoises[Count] );
+		precache_generic( g_Cache );
+	}
+
+	// precache_generic() instead - can't use emit_sound()
+	for( new Count; Count < sizeof(g_ZombieNoisesEmitting); Count++ )
+	{
+		formatex( g_Cache, sizeof( g_Cache ) - 1, "sounds/%s", g_ZombieNoisesEmitting[Count] );
+		precache_sound( g_Cache );
+	}
 	
 	p_Zombies			= register_cvar( "dz_zombies", "50" );
+	p_Humans			= register_cvar( "dz_humanbots", "5" );
 	p_TimePeriod 		= register_cvar( "dz_phasetime","8");
 	p_ClientZombies 	= register_cvar( "dz_allowclientzombies", "0" );
 	p_ZombieHealth 		= register_cvar( "dz_zombiehp", "200" );
@@ -166,6 +308,14 @@ public plugin_precache()
 	p_SpawnGodTime		= register_cvar( "dz_postspawngod", "5" );
 	p_StartWeapon		= register_cvar( "dz_startwpn", "22" );
 	p_MonsterMod		= register_cvar( "dz_monstermod", "zombie headcrab" );
+	p_MonsterModEnabled = register_cvar( "dz_monstermod_enable", "0" );
+	p_MaxSelectPerks 	= register_cvar( "dz_maxselectableperks", "-1" );
+	p_MaximumFrags		= register_cvar( "dz_maxperkfrag", "50000" ); // How many frags do we need to reach max level
+	p_HudColorR			= register_cvar( "dz_hudcolor_r", "45" );
+	p_HudColorG			= register_cvar( "dz_hudcolor_g", "164" );
+	p_HudColorB			= register_cvar( "dz_hudcolor_b", "232" );
+	p_HudPosX			= register_cvar( "dz_hudcolor_x", "-1.0" );
+	p_HudPosY			= register_cvar( "dz_hudcolor_y", "1.0" );
 
 	hook_cvar_change( p_BaseLights, "cvar_baseLightsChanged" );
 	
@@ -177,9 +327,9 @@ public plugin_precache()
 	server_cmd( "exec %s", g_Cache );
 	server_exec();
 	
-	if( get_cvar_num( "mp_teamplay" ) == 0 ) {
+	// won't work unless we are setup for teamplay
+	if( get_cvar_num( "mp_teamplay" ) == 0 )
 		error( "server does not have mp_teamplay = 1, please set and restart", true );
-	}
 
 	new leftTeam[33];
 	new rightTeam[33];
@@ -197,7 +347,7 @@ public plugin_precache()
 	}
 	
 	// Filling the zombie models
-	// Hopfully like the info says, the team for the zombies is team two, so the model list, will be to the right
+	// Hopfully like the info says, the team for the zombies is team two, so the model list will be to the right
 
 	get_cvar_string( "mp_teammodels", g_Cache, 255 );
 	strtok( g_Cache, g_Cache, 255, g_Cache, 255, '|' );
@@ -231,8 +381,9 @@ public plugin_precache()
 		precache_model( g_Cache );
 	}
 
-	//
-	get_pcvar_string( p_MonsterMod, g_Cache, 255 );
+	// MonsterMod Support
+	// TODO: Check if metamod plugin is actually installed/running
+	get_pcvar_string( p_MonsterMod, g_Cache, sizeof( g_Cache ) - 1 );
 	if( g_Cache[0] )
 	{
 		new index = 0;
@@ -242,24 +393,77 @@ public plugin_precache()
 		while( index != - 1 )
 		{
 			index = argparse( g_Cache, index, monster, 32 );
-			if( monster[0] ) 
-				copy(g_Monsters[count++], 32, monster );
+			if( monster[0] ) {
+				copy(g_Monsters[g_MonstersCount++], 32, monster );
+				notify( 0, "MonsterMod Monster '%s' loaded", monster );
+			}
 		}
 	}
 }
 
+hasPerk( id, perkBit )
+	return ( g_UserPerks[id] & perkBit )
+
+buildPerkMenu( id )
+{
+	if( !is_user_connected( id ) )
+		return
+
+	new menu = menu_create( "Perks", "_HandlePerks" );
+	for( new i = 0; i < NUM_OF_PERKS; i++ )
+	{
+		copy( g_Cache, sizeof( g_Cache ) - 1, g_PerkNames[i] );
+		
+		if( hasPerk(id, ( 1 << (i*2) ) ) )
+			add( g_Cache, sizeof( g_Cache ) - 1, " *" );
+		
+		menu_additem( menu, g_Cache );
+	}
+
+	menu_display( id, menu );
+}
+
+buildWeaponMenu()
+{
+	if( g_GunMenu )
+		menu_destroy( g_GunMenu );
+
+	g_GunMenu = menu_create( "Weapons", "_DGunMenu" );
+
+	for( new i = 0; i < TSX_MAX_WEAPONID; i++ )
+	{
+		if( gWeaponRequiredLevel[i] > MAX_LEVEL )
+			error( "Required weapon level '%i' is over the max defined level '%i' Please fix and recompile",
+				false, gWeaponRequiredLevel[i], MAX_LEVEL );
+
+		// -1 = do not add this weapon
+		if( gWeaponRequiredLevel[i] == -1 )
+			continue
+
+		new info[3]
+		num_to_str( i+1, info, 2 );
+
+		formatex( g_Cache, sizeof( g_Cache ) - 1, "%s (Req. Level %i)", 
+			gWeaponNames[i], gWeaponRequiredLevel[i] );
+
+		menu_additem( g_GunMenu, g_Cache, info );
+	}
+}
+
+public server_changelevel( map[] )
+	closeVaultFiles();
+
 public plugin_init()
 {
 	// Main
-	register_plugin( "TS Zombies (DZombies)", "1.0", "TJ" );
+	register_plugin( "TS Zombies (DZombies)", g_Version, "Trevor 'Drak' J" );
 	
 	// Events
-	register_event( "DeathMsg", "Event_DeathMSG", "a" );
 	register_event( "ResetHUD", "Event_ResetHUD", "b" );
 	register_event( "WeaponInfo", "Event_WeaponInfo", "b" );
 	register_message( 50, "Message_TS50" );
 
-	//register_forward( FM_SetClientMaxspeed,  "fwd_SetClientMaxspeed" );
+	register_forward( FM_SetClientMaxspeed,  "fwd_SetClientMaxspeed" );
 	register_forward( FM_GetGameDescription, "fwd_GetGameDescription" );
 	
 	// Used for player spawning
@@ -267,44 +471,47 @@ public plugin_init()
 	
 	// Commands
 	register_concmd( "dz_removebot", "cmdRemoveBot", ADMIN_BAN, "removes a zombie bot from the server" );
-	register_concmd( "dz_addbot", "cmdAddBot", ADMIN_BAN, "adds a zombie bot to the server" );
+	register_concmd( "dz_addbot", "cmdAddBot", ADMIN_BAN, "<human true/false> adds a human or zombie bot to the server" );
+	register_concmd( "dz_setperklevel", "cmdSetPerkLevel" );
+	register_concmd( "dz_reload", "cmdReloadFiles" );
 	//register_srvcmd("DZ_PerkLevel","CmdUpdatePerk",_,"<perk> <level> - set's what level you need to be (or higher) to have this perk");
 	//register_concmd("DZ_PerkLevel","CmdUpdatePerk",_,"<perk> <level> - set's what level you need to be (or higher) to have this perk");
 	//register_srvcmd("DZ_AddBot","CmdAddBot",_,"- adds a bot to the zombie team. use this instead of ^"addbot^"");
 	
 	// Client Commands
-	register_clcmd("say","CmdSay");
-	register_clcmd("say /menu","CmdMenu",_,"- shows the main zombie menu");
+	register_clcmd( "say", "CmdSay" );
+	register_clcmd( "say /menu", "CmdMenu",_,"- shows the main zombie menu");
+	register_clcmd( "say /dtest", "CmdTest" );
 	
 	// Menus
-	g_MainMenu = menu_create("DZombieMOD Main Menu","_DMainMenu");
-	menu_additem(g_MainMenu,"View my Perks");
-	menu_additem(g_MainMenu,"Guns");
-	menu_additem(g_MainMenu,"Help");
-	
-	g_GunMenu = menu_create("[GunMenu]^nYou can hold more guns^nthe higher level you are^n^nPage:","_DGunMenu");
-	menu_additem( g_GunMenu, "Last Used Weapons" );
-	menu_additem( g_GunMenu, "Glock18" );
-	menu_additem( g_GunMenu, "Glock20" );
-	menu_additem( g_GunMenu, "Five-Seven" );
-	menu_additem( g_GunMenu, "Deagle" );
-	menu_additem( g_GunMenu, "RagingBull" );
-	menu_additem( g_GunMenu, "CKnife" );
-	menu_additem( g_GunMenu, "Katana" );
-	menu_additem( g_GunMenu, "Mossberg" );
-	menu_additem( g_GunMenu, "Sawed Off" );
-	menu_additem( g_GunMenu, "M3" );
-	menu_additem( g_GunMenu, "MP7" );
+	g_MainMenu = menu_create( g_ModName, "_DMainMenu" );
+	menu_additem( g_MainMenu, "Perks" );
+	menu_additem( g_MainMenu, "Guns" );
+	menu_additem( g_MainMenu, "View High Scores" );
+	menu_additem( g_MainMenu, "Help" );
 	
 	// Tasks
-	set_task(1.0,"HUDTask",_,_,_,"b");
+	// Delay 60 seconds, make sure clients have joined and loaded
+	set_task( 60.0, "beginGameLogic" );
 
 	// Lighting bug fix
 	server_cmd( "sv_skycolor_r 0;sv_skycolor_g 0;sv_skycolor_b 0" );
 	server_exec();
 
 	g_CurrentLightLevel = get_pcvar_num( p_BaseLights );
+
+	new fragsPerMinute = 4
+	new maxFrags = get_pcvar_num( p_MaximumFrags );
+	error( "At %i frags per min, max level would take an estimated %ihrs, based on dz_maxperkfrag value of %i",
+		false,
+		fragsPerMinute,
+		( maxFrags / fragsPerMinute ) / 60,
+		maxFrags
+	);
 }
+
+public beginGameLogic()
+	set_task( 1.0, "MainGameTask",_,_,_,"b" );
 
 public fwd_GetGameDescription()
 {
@@ -362,7 +569,7 @@ public CmdSay(id)
 		
 		switch(WeaponName[0])
 		{
-			case 'a': ts_giveweaponspawn(id,TSW_AK47,100);
+			case 'a': ts_giveweaponspawn( id, TSW_AK47, 100 );
 			case 'g':
 			{
 				if(containi(WeaponName,"18") != -1)
@@ -419,6 +626,7 @@ public _DMainMenu(id,Menu,Item)
 	{
 		case 0:
 		{
+			buildPerkMenu( id );
 			g_Cache[0] = 0
 			
 			add(g_Cache,255,"This is the list of your enabled perks:^n");
@@ -438,61 +646,77 @@ public _DMainMenu(id,Menu,Item)
 	return PLUGIN_HANDLED
 }
 
-public _DGunMenu(id,Menu,Item)
+public _DGunMenu( id, menu, item )
 {
-	if(Item == MENU_EXIT)
+	if( item == MENU_EXIT )
 		return PLUGIN_HANDLED
+
+	new info[3]
+	menu_item_getinfo( g_GunMenu, item, _, info, 2 );
+
+	new wpnId = str_to_num( info );
 	
-	switch(Item)
-	{
-		case 0: ts_giveweaponspawn(id,TSW_GLOCK18,100);
-		case 1: ts_giveweaponspawn(id,TSW_GLOCK20,100);
-		case 2: ts_giveweaponspawn(id,TSW_57,100);
-		case 3: ts_giveweaponspawn(id,TSW_RBULL,100);
-		case 4: ts_giveweaponspawn(id,TSW_CKNIFE,100);
-		case 5: ts_giveweaponspawn(id,TSW_KATANA,100);
-		case 6: ts_giveweaponspawn(id,TSW_MOSSBERG,100);
-		case 7: ts_giveweaponspawn(id,TSW_SAWED_OFF,100);
-		case 8: ts_giveweaponspawn(id,TSW_M3,100);
-		case 9: ts_giveweaponspawn(id,TSW_MP7,100);
-		case 10: ts_giveweaponspawn(id,TSW_SKORPION,100);
-		case 11: ts_giveweaponspawn(id,TSW_MP5SD,100);
-		case 12: ts_giveweaponspawn(id,TSW_M4A1,100);
-		case 13: ts_giveweaponspawn(id,TSW_AK47,100);
-		case 14: ts_giveweaponspawn(id,TSW_M16A4,100);
-	}
+	if( wpnId > 0 && wpnId <= TSX_MAX_WEAPONID )
+		ts_giveweaponspawn( id, wpnId, 100, 0 );
+	else
+		notify( id, "[DZ] Unable to give selected weapon." );
 	
 	return PLUGIN_HANDLED
 }
 
-public CmdUpdatePerk(id,level,cid)
+public _HandlePerkMenu( id, menu, item )
 {
-	new bool:ServerCommand = bool:is_dedicated_server();
-	if(!ServerCommand && !cmd_access(id,level,cid,2))
-		return PLUGIN_HANDLED
-	
-	new Arg[33],Arg2[12]
-	read_argv(1,Arg,32);
-	read_argv(2,Arg2,11);
-	
-	new PerkLevel = clamp(str_to_num(Arg2),0,30);
-	
-	switch(Arg[0])
+	if( item == MENU_EXIT )
+		return menu_destroy( menu );
+
+	switch( item )
 	{
-		case 'h':
-		{
-			g_PerkNeededLevel[PW_HEALTHBOOST] = PerkLevel
-			ServerCommand ? 
-				server_print("[DZombie] Updated ^"Health Boost^" perk. Level needed to activate: %s",Arg2) : console_print(id,"[DZombie] Updated ^"Health Boost^" perk. Level needed to activate: %s",Arg2);
-		}
-		default:
-		{
-			ServerCommand ? 
-				server_print("[DZombie] Invalid Perk. Perk names:") : console_print(id,"[DZ] Invalid Perk. Perk names:");
-				
-			return PLUGIN_HANDLED
+	}
+}
+
+getPerkRequiredLevel( id, const perkId[] )
+{
+
+}
+
+getPerkIndex( id, const perk[] )
+{
+	new i = 0;
+	for( i = 0; i < MAX_PERKS; i++ ) {
+		if( equali( perk, g_PerkNamesId[i] ) || equali( perk, g_PerkNames[i] ) ) {
+			return i
 		}
 	}
+}
+
+public cmdReloadFiles( id, level, cid )
+{
+
+}
+
+public cmdSetPerkLevel( id, level, cid )
+{
+	new bool:ServerCommand = bool:is_dedicated_server();
+	if( !ServerCommand && !cmd_access( id, level, cid, 2 ) )
+		return PLUGIN_HANDLED
+	
+	new args[33]
+	read_argv( 1, args, 32 );
+
+	new perkId[33], perkLevel[3]
+	copy( perkId, 32, args );
+
+	read_argv( 2, args, 32 );
+	copy( perkLevel, 2, args );
+
+	if( str_to_num( args ) < 0 || str_to_num( args ) > MAX_LEVEL ) {
+		notify( id, "Perk level '%s' must be between 0 - %i (max level)", perkLevel, MAX_LEVEL );
+		return PLUGIN_HANDLED
+	}
+
+	// store level required for this perk inside vault
+	formatex( g_Cache, sizeof( g_Cache ) - 1, "perk-%s", g_PerkNamesId[0] );
+	nvault_set( g_VaultFile, g_Cache, perkLevel );
 	
 	return PLUGIN_HANDLED
 }			
@@ -503,7 +727,15 @@ public cmdAddBot( id, level, cid )
 	if( !ServerCommand && !cmd_access( id, level, cid, 2 ) )
 		return PLUGIN_HANDLED
 	
-	set_task( 2.0, "addBotPlayer" );
+	new isHuman[6]
+	read_argv( 1, isHuman, 5 );
+
+	if( ( strcmp( isHuman, "true", true ) == 0 ) || ( strcmp( isHuman, "1", true ) == 0 ) )
+		formatex( isHuman, 5, "1" )
+	else
+		formatex( isHuman, 5, "0" );
+
+	set_task( 2.0, "addBotPlayer", 0, isHuman, 5 );
 }
 
 public cmdRemoveBot( id, level, cid )
@@ -516,52 +748,89 @@ public cmdRemoveBot( id, level, cid )
 	removeBotPlayer( getRandomBot() );
 }
 
-public addBotPlayer()
+public addBotPlayer( data[6] )
 {
-	notify( 0, "[DZ] Adding zombie to server" );
-	server_cmd( "addcustombot Zombie %s %f", g_ZombieTeamName, random_float( 1.0, MAX_ZOMBIE_SKILL ) );
+	new isHuman = str_to_num( data );
+	if( isHuman == 0 )
+	{
+		notify( 0, "[DZ] Adding zombie bot to server" );
+		server_cmd( "rcbot addbot 2 0 %s", g_ZombieTeamName );
+	}
+	else
+	{
+		notify( 0, "[DZ] Adding human bot to server" );
+		server_cmd( "rcbot addbot 1 0 %s", g_HumanTeamName );
+	}
 }
 
-public removeBotPlayer(idx)
+removeBotPlayer( idx, bool:isHumanTeamBot = false )
 {
 	if( idx )
 	{
-		notify( 0, "[DZ] Removing zombie from server" );
+		notify( 0, "[DZ] Removing %s from server", isHumanTeamBot == true ? "Human Bot" : "Zombie Bot" );
 		server_cmd( "kick #%i", get_user_userid( idx ) );
 	}
 }
 // --------------------------------------------------------------------------------------
-// I would rather not do this. But there isn't a better way to delay the load
-// The nature of most mods, sometimes there steamid is still not valid in client_authorized();
-public client_authorized(id)
+getUserDataAsString( id, const key[], value[], valueLen )
 {
-	g_UserLoaded[id] = 0
-	if(!is_user_bot(id))
-		set_task(2.0,"DelayLoad",id);
+	getUserData( id, key, "", true, value, valueLen )
 }
 
-public DelayLoad(id)
+getUserData( id, const key[], defaultReturn = 0, value[]="", &valueLen=0 )
 {
-	if(!is_user_connected(id))
-		return set_task(2.0,"DelayLoad",id);
-	
-	static AuthID[36]
-	get_user_authid(id,AuthID,35);
-	
-	if(!CheckAuthID(AuthID))
-		return error("Invalid SteamID on Connecting (%s)",_,AuthID);
-	
-	if(nvault_get(g_VaultFile,AuthID,g_Cache,255))
+	if( is_user_bot( id ) )
+		return defaultReturn;
+
+	static AuthID[36+12]
+	get_user_authid(id, AuthID, 35);
+
+	// is format faster?
+	add( AuthID, sizeof( AuthID ) - 1, "-" );
+	add( AuthID, sizeof( AuthID ) - 1, key );
+
+	new timestamp
+	new result = nvault_lookup( g_VaultFile, AuthID, g_Cache, sizeof( g_Cache ) - 1, timestamp );
+
+	if( result ==  0 )
+		return defaultReturn
+
+	// nvault_get() internally uses a hashmap
+	// this should be decently quick, i think?
+	return nvault_get( g_VaultFile, AuthID );
+}
+
+setUserDataAsString( id, const key[], const value[] )
+{
+	setUserData( id, key, -1, value );
+}
+setUserData( id, const key[], intValue = -1, strValue[] = "" )
+{
+	if( is_user_bot( id ) )
+		return;
+
+	static AuthID[36+12]
+	get_user_authid(id, AuthID, 35);
+
+	// is format faster?
+	add( AuthID, sizeof( AuthID ) - 1, "-" );
+	add( AuthID, sizeof( AuthID ) - 1, key );
+
+	// we always pass a string to nvault_set
+	static val[12];
+	if( intValue != -1 )
 	{
-		new szFrags[12]
-		parse(g_Cache,szFrags,11);
-		g_UserFrags[id] = str_to_num(szFrags);
+		static val[12];
+		num_to_str( intValue, val, 11 );
+
+		formatex( g_Cache, sizeof( g_Cache ) - 1, "%s", val );
 	}
-	
-	g_UserLoaded[id] = 1
-	set_task( 5.0, "fixLights" );
-	
-	return PLUGIN_HANDLED
+	else
+	{
+		formatex( g_Cache, sizeof( g_Cache ) - 1, "%s", strValue );
+	}
+
+	nvault_set( g_VaultFile, AuthID, g_Cache );
 }
 
 public fixLights()
@@ -578,13 +847,19 @@ public fixLights()
 
 	server_print( "[DZ] Applying lighting value of '%s' (%i)", letter, g_CurrentLightLevel );
 }
+
+public client_authorized( id, const authid[] )
+{
+	g_UserPlayTime[id] = getUserData( id, "playtime", 0 );
+}
+
 public client_disconnected(id)
 {
 	g_UserLoaded[id] = 0
 	g_UserShowMessage[id] = 0
-	
-	if(!is_user_bot(id) && is_user_connected(id))
-		SaveUserData(id);
+
+	// Log playtime
+	setUserData( id, "playtime", g_UserPlayTime[id] + floatround( get_gametime() ) )
 }
 
 public client_infochanged(id)
@@ -601,24 +876,32 @@ public client_infochanged(id)
 		client_print(id,print_chat,"[DZ] Client's are currently not allowed to join the zombie team.");
 		return PLUGIN_HANDLED
 	}
+
+	// Update the player name for this steamid
+	get_user_name( id, Team, 32 );
+	//setUserData( id, "plname", Team );
 	
 	return PLUGIN_CONTINUE
 }
 
 // --------------------------------------------------------------------------------------
-// HUD
-public HUDTask()
+// Game Logic
+public MainGameTask()
 {
-	populateBots();
-	RenderHUD()
+	populateZombies()
+	populateHumanBots();
+	drawHUD();
+	handleLights();
 }
 
-new botLastAddded = 0
+new zombieLastAdded = 0
 
-populateBots()
+populateZombies()
 {
-	if( ( get_systime() - botLastAddded ) < 5.0 )
+	if( ( get_systime() - zombieLastAdded ) < 5.0 + random( 5 ) )
 		return
+	
+	zombieLastAdded = get_systime();
 
 	new humanPlayers = getHumanCount();
 	new Float:numberOfZombies = ( g_MaxPlayers - humanPlayers ) * ( get_pcvar_num( p_Zombies ) * 0.01 )
@@ -626,7 +909,6 @@ populateBots()
 
 	if( num > g_ZombieCount )
 	{
-		botLastAddded = get_systime();
 		set_task( 2.0, "addBotPlayer" )
 	}
 
@@ -636,7 +918,54 @@ populateBots()
 	}
 }
 
-RenderHUD()
+new humanLastCheckTime = 0
+
+populateHumanBots()
+{
+	if( ( get_systime() - humanLastCheckTime ) < 5.0 + random( 5 ) )
+		return
+
+	humanLastCheckTime = get_systime();
+
+	new humanPlayers = getHumanCount();
+	new howManyHumanBotsWanted = get_pcvar_num( p_Humans );
+	new howManyHumanBotsActive = getHumanBotCount();
+
+	if( ( humanPlayers < howManyHumanBotsWanted ) && ( howManyHumanBotsActive < howManyHumanBotsWanted ) )
+	{
+		if( ( humanPlayers - ( howManyHumanBotsWanted - howManyHumanBotsActive) ) < 0 ) {
+			new data[6]
+			data = "1"
+			set_task( 2.0, "addBotPlayer", _, data, 5 );
+		}
+	}
+	else
+	{
+		if( ( humanPlayers + howManyHumanBotsActive ) > howManyHumanBotsWanted )
+			removeBotPlayer( getRandomHumanBot(), true );
+	}
+}
+
+buildHudString( id, str[], len )
+{
+	new Float:gameTime = get_gametime();
+	new playTime = ( floatround( gameTime ) + g_UserPlayTime[id] )
+
+	static topPlayer[ MAX_NAME_LENGTH ]
+	getTopPlayer( topPlayer, sizeof( topPlayer ) - 1 );
+
+	formatex(str, len, 
+		"Zombies Killed: %d - Level: %d/%d - Playtime: %i mins - Time of Day: %s\nTop Player: %s",
+		getUserData(id, "frags", 0),
+		fragsToLevel(id),
+		MAX_LEVEL,
+		(playTime / 60),
+		g_Time[g_TimePeriod],
+		topPlayer
+	);
+}
+
+handleLights()
 {
 	if(++g_TimePeriodNum >= (get_pcvar_num(p_TimePeriod) * 60))
 	{
@@ -683,6 +1012,10 @@ RenderHUD()
 		}
 		g_TimePeriodNum = 0
 	}
+}
+
+drawHUD()
+{
 	
 	new TalkingZombies
 	
@@ -735,6 +1068,11 @@ RenderHUD()
 		{
 			new Origin[3]
 			get_user_origin(idx,Origin);
+
+			new Float:gameTime = get_gametime();
+			if( gameTime - g_ZombieLastSeenPlayer[idx] > 500 ) { 
+				// do something
+			}
 			
 			if(abs(Origin[2]) > 450)
 				FixZombieLocation(idx,200.0);
@@ -759,20 +1097,30 @@ RenderHUD()
 				new name[33]
 				get_user_name( ply, name, 32 );
 
-				server_cmd( "monster headcrab %s", name )
-				server_print( "[TS Zombies] Spawning a MonsterMod entity.." );
+				//server_cmd( "monster headcrab %s", name )
+				//server_print( "[TS Zombies] Spawning a MonsterMod entity.." );
 			}
 		}
-		
-		set_hudmessage(HUD_RED,HUD_GREEN,HUD_BLUE,HUD_X,HUD_Y,_,_,99.0,_,_,1);
-		
-		formatex(g_Cache,255,"Zombies Killed: %d - Level: %d/%d - Phase: %s",
-			g_UserFrags[idx],FragsToLevel(idx),30,g_Time[g_TimePeriod]);
-		
+
+		set_hudmessage( get_pcvar_num( p_HudColorR ),
+			get_pcvar_num( p_HudColorG ), get_pcvar_num( p_HudColorB ),
+			get_pcvar_float( p_HudPosX ), get_pcvar_float( p_HudPosY ),
+			_,_,99.0,_,_,1 );
+
+		buildHudString( idx, g_Cache, sizeof( g_Cache ) - 1 );
 		show_hudmessage(idx,g_Cache);
 	}
 }
 
+spawnMonster()
+{
+	if( !get_pcvar_bool( p_MonsterModEnabled ) )
+		return
+}
+getRandomMonsterMod()
+{
+	return g_Monsters[ random_num( 0 , g_MonstersCount - 1 ) ]
+}
 // --------------------------------------------------------------------------------------
 public Message_TS50(msg_id,msg_dest,msg_entity)
 {
@@ -780,6 +1128,10 @@ public Message_TS50(msg_id,msg_dest,msg_entity)
 	
 	victim = get_msg_arg_int(2);
 	attacker = get_msg_arg_int(3);
+
+	// This bot (zombie) caused damage, use this to say we saw a player
+	if( is_user_bot( attacker ) )
+		g_ZombieLastSeenPlayer[attacker] = get_gametime();
 	
 	if(!is_user_alive(attacker) || !is_user_bot(victim))
 		return PLUGIN_HANDLED
@@ -803,24 +1155,31 @@ public Message_TS50(msg_id,msg_dest,msg_entity)
 	
 	return PLUGIN_HANDLED
 }
-// NOTE NOTE NOTE:
-// This does not take in-account for kills on "client" zombies.
-// Todo so, you would have to use "get_user_team" and see if the victim was on g_ZombieTeamName[]
-// I'm not going todo that, but just letting anybody else know.
-public Event_DeathMSG()
+
+/* from amxconst.inc
+    #define HIT_GENERIC        0
+    #define HIT_HEAD        1
+    #define HIT_CHEST        2
+    #define HIT_STOMACH        3
+    #define HIT_LEFTARM        4
+    #define HIT_RIGHTARM        5
+    #define HIT_LEFTLEG        6
+    #define HIT_RIGHTLEG        7 
+*/
+
+public client_death( killer, victim, wpnindex, hitplace, TK )
 {
-	// Used for:
-	// Actual frag count
-	new const Killer = read_data(1),Victim = read_data(2);
-	new const IsBotVictim = is_user_bot(Victim);
-	
-	if(is_user_connected(Killer) && IsBotVictim)
-		g_UserFrags[Killer]++
-	
-	if(IsBotVictim)
-	{
-		// Zombie death
-	}
+	server_print("a death has occured");
+	if( is_user_bot( killer ) )
+		return
+
+	if( killer == victim )
+		return
+
+	server_print("dead");
+
+	new curFrags = getUserData( killer, "frags", 0 );
+	setUserData( killer, "frags", curFrags + 1 );
 }
 
 // ResetHUD takes care of bots (as Ham_Spawn isn't called for them)
@@ -856,8 +1215,16 @@ public Event_PlayerSpawn(id)
 {
 	if(!is_user_alive(id))
 		return HAM_HANDLED
+
+	// There's always an issue with "looping" sounds on some maps
+	// especially when certin entities are forced, just send this every respawn...
+	client_cmd( id, "stopsound" );
 	
-	client_infochanged(id);
+	// force an update on certin things
+	client_infochanged( id );
+
+	// spawn effect
+	effect_lava( id );
 
 	new Float:playerStartHealth = get_pcvar_float(p_PlayerHealth);
 
@@ -875,7 +1242,7 @@ public Event_PlayerSpawn(id)
 	{
 		new Float:Health
 		
-		switch(FragsToLevel(id))
+		switch(fragsToLevel(id))
 		{
 			case 0..5: Health = 5.0
 			case 6..10: Health = 15.0
@@ -902,7 +1269,7 @@ public Event_PlayerSpawn(id)
 	new startWeapon = get_pcvar_num( p_StartWeapon );
 	if( startWeapon > 0 && startWeapon <= TSX_MAX_WEAPONID )
 	{
-		tse_giveuserweap( id, startWeapon, 1000, TSE_ATM_LASERSIGHT + TSE_ATM_FLASHLIGHT );
+		//tse_giveuserweap( id, startWeapon, 1000, TSE_ATM_LASERSIGHT + TSE_ATM_FLASHLIGHT );
 	}
 	
 	return HAM_IGNORED
@@ -938,60 +1305,45 @@ public DelayWeaponDrop(id)
 	engclient_cmd(id,"drop");
 
 // --------------------------------------------------------------------------------------
-
-
-// Will save everybody's data to the vault file.
-// This needs to be profiled, to see how often I should call it
-SaveAllUserData()
-{
-	new Count
-	for(Count = 0;Count <= g_MaxPlayers;Count++)
-	{
-		if(!is_user_connected(Count) || is_user_bot(Count))
-			continue;
-		
-		SaveUserData(Count);
-	}
-}
-
-SaveUserData(const id)
-{
-	static AuthID[36]
-	get_user_authid(id,AuthID,35);
-	
-	if(CheckAuthID(AuthID))
-	{
-		formatex(g_Cache,255,"%d",g_UserFrags[id]);
-		nvault_set(g_VaultFile,AuthID,g_Cache);
-	}
-	else
-		error("Saved User Data, with Invalid AuthID (%s)",_,AuthID);
-}
-
-bool:CheckAuthID(const AuthID[])
+bool:CheckAuthID( const AuthID[] )
 {
 	if(!AuthID[0])
 		return false
 	
-	if(containi(AuthID,"PENDING") != -1 || containi(AuthID,"") != -1)
+	if(containi( AuthID, "PENDING" ) != -1 || containi( AuthID, "" ) != -1 )
 		return false
 	
 	return true
 }
 
-// Hard-coded level / max level
-// You can change the amount of frags for each level (they need x frags for x level)
-// You change what addons/powers/perks they get with a cvar
-FragsToLevel(id)
+fragsToLevel( id )
 {
-	new Level
-	
-	switch(g_UserFrags[id])
-	{
-		default: Level = 30
-	}
-	
-	return Level;
+	new level = 0
+	new frags = getUserData( id, "frags" );
+	new maxFrags = get_pcvar_num( p_MaximumFrags );
+
+	level = getScaledValue( frags, 0, maxFrags, 0, MAX_LEVEL );
+
+	return level
+}
+
+Float:getScaledValue(value, sourceRangeMin, sourceRangeMax, targetRangeMin, targetRangeMax) {
+	new Float:targetRange = targetRangeMax - targetRangeMin;
+	new Float:sourceRange = sourceRangeMax - sourceRangeMin;
+    return (value - sourceRangeMin) * targetRange / sourceRange + targetRangeMin
+}
+
+FragsToPerks( id )
+{
+	new level = fragsToLevel( id );
+	if( level )
+		return 0
+
+	// scale between 0-MAX LEVEL
+	// to 0 (no perks) - MAX_PERKS (all perks)
+	getScaledValue()
+
+	level = clamp( NUM_OF_PERKS)
 }
 
 AddPerk(id,Perk)
@@ -1027,15 +1379,83 @@ notify( id, const message[], any:... )
 	log_amx( g_Cache );
 }
 
+// Needs stats plugin running and enabled
+// I think get_stats() returns them already sorted?
+getTopPlayer( topName[], len ) {
+	new stats[STATSX_MAX_STATS], body[MAX_BODYHITS], name[MAX_NAME_LENGTH]
+	new imax = get_statsnum()
+	new maxFrags = -1
+
+	for(new a = 0; a < imax; ++a) {
+		get_stats(a, stats, body, name, charsmax(name) )
+		if( stats[STATSX_KILLS] > maxFrags ) {
+			maxFrags = stats[STATSX_KILLS]
+			copy( topName, len, name );
+		}
+	}
+}
+
+/*
+getTop15(){
+  new stats[STATSX_MAX_STATS], body[MAX_BODYHITS], name[MAX_NAME_LENGTH]
+  new pos = copy(g_Buffer,charsmax(g_Buffer),"#   nick                           kills/deaths    TKs      hits/shots/headshots^n")
+  new imax = get_statsnum()
+  if (imax > 15) imax = 15
+  for(new a = 0; a < imax; ++a){
+    get_stats(a,stats,body,name,charsmax(name))
+    replace_all(name, charsmax(name), "<", "[")
+    replace_all(name, charsmax(name), ">", "]")
+    pos += format(g_Buffer[pos],charsmax(g_Buffer)-pos,"%2d.  %-28.27s    %d/%d          %d            %d/%d/%d^n",a+1,name,stats[STATSX_KILLS],stats[STATSX_DEATHS],stats[STATSX_TEAMKILLS],stats[STATSX_HITS],stats[STATSX_SHOTS],stats[STATSX_HEADSHOTS])
+  }
+}
+*/
+/*
+	Play a sound on client that is not emitted
+	This helps keep the precache down, use precache_generic() instead when playing sounds this way
+*/
+playSound( id, file )
+	client_cmd( id, "spk ^"%s^"", file );
+
+/*
+	Play a sound on all connected clients
+*/
+playSoundOnAll( file )
+{
+	new Count
+	for(Count = 0;Count <= g_MaxPlayers;Count++)
+	{
+		if( !is_user_connected(Count) || is_user_bot(Count) || !is_user_alive(Count) )
+			continue;
+
+		playSound( count, file );
+	}
+}
+
 getRandomBot()
 {
 	if(!get_playersnum())
 		return 0
 
-	new players[MAX_PLAYERS]
+	static players[MAX_PLAYERS]
 	new playerIndex
 
 	get_players( players, playerIndex, "de", g_ZombieTeamName );
+
+	if( playerIndex < 1 )
+		return 0
+
+	return players[random( playerIndex )]
+}
+
+getRandomHumanBot()
+{
+	if(!get_playersnum())
+		return 0
+
+	static players[MAX_PLAYERS]
+	new playerIndex
+
+	get_players_ex( players, playerIndex, GetPlayers_ExcludeHuman | GetPlayers_MatchTeam, g_HumanTeamName );
 
 	if( playerIndex < 1 )
 		return 0
@@ -1064,7 +1484,17 @@ getHumanCount()
 	static players[MAX_PLAYERS]
 
 	new humanCount = 0
-	get_players( players, humanCount, "c" );
+	get_players_ex( players, humanCount, GetPlayers_ExcludeBots );
+
+	return humanCount
+}
+
+getHumanBotCount()
+{
+	static players[MAX_PLAYERS]
+
+	new humanCount = 0
+	get_players_ex( players, humanCount, GetPlayers_ExcludeHuman | GetPlayers_MatchTeam, g_HumanTeamName );
 
 	return humanCount
 }
@@ -1153,11 +1583,17 @@ TS_SetUserSlots(const id,const Slots)
 }
 
 /*==================================================================================================================================================*/
-// Functions below are copied from "fakemeta_util" by VEN
-ts_giveweaponspawn(id,const WeaponID,const ExtraClip)
+ts_giveweaponspawn( id, const wpnId, const extraClip, const wpnExtras = 0 )
 {
-	g_UserWeapons[id][WeaponID]=1
-	tse_giveuserweap(id, WeaponID, ExtraClip );
+	if( !is_user_connected( id ) )
+		return
+
+	if( !is_user_alive( id ) )
+		return
+
+	//g_UserWeapons[id][WeaponID]=1
+	ts_giveweapon( id, wpnId, extraClip, wpnExtras )
+
 	/*
 	new ent = engfunc(EngFunc_CreateNamedEntity,engfunc(EngFunc_AllocString,"ts_groundweapon"))
 	if(!ent)
@@ -1187,5 +1623,89 @@ ts_giveweaponspawn(id,const WeaponID,const ExtraClip)
 	return ent
 	*/
 }
+
+new bool:n = false
+public CmdTest(id)
+{
+	if( !is_user_admin(id ) )
+		return
+		
+	effect_lava(id);
+	effect_implosion( id );
+	effect_nightVision( id, !n );
+}
+
+effect_lava( entId )
+{
+	if( !is_valid_ent( entId ) )
+		return
+
+	new Float:origin[3]
+	entity_get_vector( entId, EV_VEC_origin, origin );
+
+	message_begin_f( MSG_PVS, SVC_TEMPENTITY, origin );
+	write_byte( TE_LAVASPLASH )
+	write_coord( origin[0] );
+	write_coord( origin[1] );
+	write_coord( origin[2] );
+	message_end();
+}
+
+effect_implosion( entId, radius = 2, count = 100, life = 10 )
+{
+	if( !is_valid_ent( entId ) )
+		return
+
+	new Float:origin[3]
+	entity_get_vector( entId, EV_VEC_origin, origin );
+
+	message_begin( MSG_BROADCAST, SVC_TEMPENTITY, origin );
+	write_byte( TE_IMPLOSION )
+	
+	write_coord( origin[0] )
+	write_coord( origin[1] )
+	write_coord( origin[2] )
+
+	write_byte(radius);
+	write_byte(count);
+	write_byte(life);
+
+	message_end();
+}
+
+effect_nightVision( id, bool:On = false )
+{
+	if( On )
+	{
+		message_begin(MSG_ONE,g_msgScreenFade,{0,0,0},id);
+		write_short(~0);
+		write_short(~0);
+		write_short(1<<2);
+		write_byte(0);
+		write_byte(255);
+		write_byte(0);
+		write_byte(70);
+		message_end();
+	}
+	else
+	{
+		message_begin(MSG_ONE,g_msgScreenFade,{0,0,0},id);
+		write_short(~0);
+		write_short(~0);
+		write_short(1<<2);
+		write_byte(0);
+		write_byte(0);
+		write_byte(0);
+		write_byte(0);
+		message_end();
+	}
+}
+
+closeVaultFiles()
+{
+	if( g_VaultFile != INVALID_HANDLE)
+		nvault_close( g_VaultFile );
+}
+
 public plugin_end()
-	nvault_close(g_VaultFile)
+	closeVaultFiles();

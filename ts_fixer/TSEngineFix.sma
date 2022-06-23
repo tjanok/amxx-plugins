@@ -1,5 +1,5 @@
 #include <amxmodx>
-#include <tsxweapons>
+#include <amxmisc>
 #include <fakemeta>
 
 // This plugin blocks all TS Message (EX: Drak fragged Spray)
@@ -7,6 +7,12 @@
 
 // This also fixes the "fuck my ear, i just got stuck in a door" glitch
 // where the sound spams over and over and over
+
+
+/*
+	TEXT FILE
+	[Entity_Name_Or_ID][REMOVE/TOGGLE (USE)/SET PROPERTY][PROPERTY_VALUE]
+*/
 
 new Float:g_LastPlayTime
 
@@ -30,6 +36,12 @@ public plugin_init()
 	
 	// MetaMod Events
 	register_forward(FM_EmitSound,"Event_EmitSound");
+}
+
+public plugin_cfg()
+{
+	new configDir[256]
+	get_datadir( configDir, 255 );
 }
 
 public Event_DeathMessage()
@@ -58,11 +70,18 @@ public Event_TSMessage()
 	return PLUGIN_CONTINUE
 }
 
+new g_testEnt;
+
 // This will disallow door sounds to "spam"
-public Event_EmitSound(ent,iChannel,const szSample[])
+public Event_EmitSound( ent, iChannel, const szSample[] )
 {
 	if(containi(szSample,"doormove") == -1)
 		return FMRES_IGNORED
+
+	if( g_testEnt = ent )
+		return FMRES_SUPERCEDE
+
+	g_testEnt = ent
 	
 	static Float:CurtPlayTime
 	CurtPlayTime = get_gametime();

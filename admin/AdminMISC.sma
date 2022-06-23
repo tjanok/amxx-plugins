@@ -103,7 +103,7 @@ public CmdForceUse(id,level,cid)
 	}
 	
 	force_use(Index,Index);
-	client_print(id,print_chat,"[AMXX] Entity Used");
+	client_print(id,print_chat,"[AMXX] Entity Used (id: %i)", Index);
 	
 	return PLUGIN_HANDLED
 }

@@ -1,1 +1,7 @@
 *.amxx
+*.amx
+/compilers
+/compiled
+/scripts
+/.vscode
+/plugins_by_others

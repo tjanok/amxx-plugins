@@ -1,6 +1,6 @@
 /*
 * TSWeaponSpawner.sma
-* Author(s): Drak
+* Author(s): Trevor J / Drak
 * -------------------------------
 * Adds and saves weapons entities for The Specialists v3.0
 * -------------------------------
@@ -12,13 +12,14 @@
 * -------------------------------
 * Convars
 * amx_ts_removewpns 1/0 - If enabled, will remove all the default weapon entities on the loaded map
+* amx_ts_weapnduration <1-999> - Respawn time of spawned weapons
 */
 
 #include <amxmodx>
 #include <amxmisc>
 #include <nvault>
 #include <fakemeta>
-#include <engine> // find_sphere_class
+#include <fakemeta_util>
 
 #define SEARCH_RADIUS 50.0
 #define MAXIMUM_ENTRIES 100
@@ -48,8 +49,10 @@ enum {
 	TSE_FM_FREEFULL
 };
 
+#define TSX_MAX_WPNID 37
+
 // Weapon names
-new gWeaponNames[37][] = {
+new gWeaponNames[TSX_MAX_WPNID][] = {
 	"Glock 18",
 	"Beretta 92F",
 	"Uzi",
@@ -129,6 +132,41 @@ enum {
 	TSE_WPN_ASKORP
 };
 
+new const gBlockedWeapons[] = {
+	2,
+	10,
+	16,
+	30
+}
+
+isBlockedWeapon( const id )
+{
+	new i = 0
+
+	for( i = 0, i < sizeof( gBlockedWeapons ); i++ )
+	{
+		if( id == gBlockedWeapons[id] )
+			return true
+	}
+
+	return false
+}
+
+findWeaponId( const name[] )
+{
+	new i = 0;
+
+	for( i = 0; i < TSX_MAX_WPNID; i++ )
+	{
+		if( containi( gWeaponNames[i], name ) != -1 )
+			return i
+	}
+
+	return -1
+}
+
+//if( invalidIds == 2 || invalidIds == 10 || invalidIds == 16 || invalidIds == 30 || invalidIds > 36 )
+
 new const gVaultFilename[] = "tsweaponspawns"
 new gVaultFile
 new gVaultWeaponCount
@@ -141,29 +179,33 @@ new gWeaponMenu
 
 new gMapName[128]
 
-// convars
+// ConVars
 new pRemoveDefaultWeapons
+new pDurationTime
 
 public plugin_precache()
 {
-	pRemoveDefaultWeapons = register_cvar( "amx_ts_removewpns", "1" );
+	pRemoveDefaultWeapons 	= register_cvar( "amx_ts_removewpns", "1" );
+	pDurationTime			= register_cvar( "amx_ts_weaponduration", "15" );
 	buildWeaponMenu();
 }
 
 public plugin_init() 
 {
-	register_plugin( "TS Weapon Spawns","1.0", "TJ Drak" );
+	register_plugin( "TS Weapon Spawns","1.0", "Trevor J 'Drak'" );
 
-	register_clcmd( "amx_ts_addwpn", "cmdSpawnWpn", ADMIN_BAN, "<wpnid> <ammo> <extra> <save 1/0> - adds gun to wall" );
+	register_clcmd( "amx_ts_addwpn", "cmdSpawnWpn", ADMIN_BAN, "<wpnid/name> <ammo> <extra> <save 1/0> - adds gun to wall" );
 	register_clcmd( "amx_ts_addwpnmenu", "cmdSpawnWpnMenu", ADMIN_BAN, "opens the weapon spawn menu" );
 	register_clcmd( "amx_ts_delwpn", "cmdRemoveWpn", ADMIN_BAN, "removes the nearest weapon spawn near you" );
 	register_clcmd( "amx_ts_listweapons", "cmdListWeapons", ADMIN_BAN, "prints a list of all weapon names with their ids" );
+	register_clcmd( "amx_ts_listspawns", "cmdListSpawns", ADMIN_BAN, "prints a list of all weapon names with their ids" );
 
 	get_mapname( gMapName, 127 );
 	gVaultWeaponCount = getVaultWeaponCount();
-
-	set_task( 2.0, "spawnWeapons" );
 }
+
+public plugin_cfg()
+	set_task( 2.0, "spawnWeapons" );
 
 public cmdSpawnWpnMenu(id, level, cid )
 {
@@ -184,31 +226,40 @@ public cmdSpawnWpn( id, level, cid )
 	if( !cmd_access( id, level, cid, 3 ) )
 		return PLUGIN_HANDLED
 	
-	new wpnId[256], extraAmmo[33], spawnFlags[33], saveSpawn[33]
+	new wpnId[33], extraAmmo[33], spawnFlags[33], saveSpawn[33]
 	new origin[3]
+
 	get_user_origin( id, origin );
 	
-	read_argv( 1, wpnId, 255 );
+	read_argv( 1, wpnId, 32 );
 	read_argv( 2, extraAmmo, 32 );
 	read_argv( 3, spawnFlags, 32) ;
 	read_argv( 4, saveSpawn, 32 );
 
-	new const invalidIds = str_to_num( wpnId );
+	new wpnIdInt = str_to_num( wpnId );
+
+	// Passed a name?
+	if( wpnIdInt == 0 )
+		wpnIdInt = findWeaponId( wpnId );
 	
-	if( invalidIds == 2 || invalidIds == 10 || invalidIds == 16 || invalidIds == 30 || invalidIds > 36 )
+	if( wpnIdInt <= 0 || isBlockedWeapon( wpnIdInt ) )
 	{
-		client_print( id, print_console, "[TS Weapon Spawner] Invalid weapon id" );
+		client_print( id, print_console, "[TS Weapon Spawner] Invalid weapon '%s'. Some weapons such as 'C4' cannot be spawned", wpnId );
 		return PLUGIN_HANDLED
 	}
-	
-	new ent = ts_weaponspawn( wpnId, "15", extraAmmo, spawnFlags, origin );
 
-	if( is_valid_ent( ent ) ) {
+	new duration[6]
+	get_pcvar_string( pDurationTime, duration, 5 );
+
+	new ent = ts_weaponspawn( wpnId, duration, extraAmmo, spawnFlags, origin );
+
+	if( ent != -1 ) 
+	{
 		client_print( id, print_console, "[TS Weapon Spawner] Weapon created" );
 
-		if( str_to_num( saveSpawn ) == 1 ) {
-			writeVaultWeapon( invalidIds, str_to_num( extraAmmo ), str_to_num( spawnFlags ), origin, ent )
-			client_print( id, print_console, "[TS Weapon Spawner] Saving..." );
+		if( ( str_to_num( saveSpawn ) == 1 ) || equali( saveSpawn, "true" ) ) {
+			writeVaultWeapon( wpnIdInt, str_to_num( extraAmmo ), str_to_num( spawnFlags ), origin, ent );
+			client_print( id, print_console, "[TS Weapon Spawner] Saving to map vault file..." );
 		}
 	}
 	
@@ -221,7 +272,7 @@ public cmdRemoveWpn( id, level, cid )
 		return PLUGIN_HANDLED
 	
 	new foundEnts[2]
-	new foundWeapons = find_sphere_class( id, "ts_groundweapon", SEARCH_RADIUS, foundEnts, 1 );
+	new foundWeapons = fm_find_sphere_class( id, "ts_groundweapon", SEARCH_RADIUS, foundEnts, 1 );
 
 	if( foundWeapons > 1 || !foundWeapons )
 	{
@@ -282,9 +333,37 @@ public printWeaponLine( const line[128] )
 		client_print( id, print_console, line );
 }
 
+public cmdListSpawns( id, level, cid )
+{
+	if( !cmd_access( id, level, cid, 0 ) )
+		return PLUGIN_HANDLED
+
+	new names[1024]
+	new temp[128], dummy[2]
+	new i = 0
+
+	for( i = 0; i < MAXIMUM_ENTRIES; i++ )
+	{
+		formatex( temp, 126, "%s-%i", gMapName, i );
+
+		if( nvault_lookup( gVaultFile, temp, dummy, 1 ) == 1 )
+
+		add( names, 1023, temp );
+		add( names, 1023, "^n" );
+
+		// delay the output to avoid any overflows
+		temp[127] = id
+		set_task( i * 0.01, "printWeaponLine", i+random(1024), temp, 128 );
+	}
+
+	names[1023] = id
+	set_task( 1.0, "showWeaponMOTD", 0, names, 1024 );
+
+	return PLUGIN_HANDLED
+}
 removeAllWeapons()
 {
-	if( get_pcvar_num( pRemoveDefaultWeapons ) == 1 )
+	if( get_pcvar_bool( pRemoveDefaultWeapons ) )
 	{
 		server_print( "[TS Weapon Spawner] Removing default map weapons.." );
 		
@@ -316,7 +395,7 @@ getVaultWeaponCount()
 		for( new i = 1; i < MAXIMUM_ENTRIES; i++ )
 		{
 			formatex( key, 127, "%s-%i", gMapName, i );
-			if( nvault_lookup( gVaultFile, key, value, 1, timestamp ) == 1) 
+			if( nvault_lookup( gVaultFile, key, value, 1, timestamp ) == 1 ) 
 				count++
 		}
 
@@ -342,8 +421,9 @@ writeVaultWeapon( wpnId, clip, attachments, origin[3], ent )
 		nvault_pset( gVaultFile, key, value );
 		nvault_close( gVaultFile );
 
-		if( is_valid_ent( ent ) )
-			set_pev( ent, pev_iuser2, gVaultWeaponCount );
+		// Store the index of this weapon inside the entity iuser2
+		if( pev_valid( ent ) )
+			set_pev( ent, pev_iuser2, index );
 	}
 }
 
@@ -371,6 +451,7 @@ getNextFreeIndex()
 
 removeVaultWeapon( ent )
 {
+	// We store our unique index/key inside iuser2
 	new keyId = pev( ent, pev_iuser2 );
 
 	if( !keyId || keyId == 0 )
@@ -626,8 +707,9 @@ buildWeaponMenu()
 ts_weaponspawn( const wpnId[], const duration[], const extraclip[], const spawnflags[], const Origin[3], vaultKey = 0 )
 {
 	new ent = engfunc(EngFunc_CreateNamedEntity,engfunc(EngFunc_AllocString,"ts_groundweapon"))
-	if(!ent)
-		return PLUGIN_CONTINUE
+	
+	if( !pev_valid( ent ) )
+		return -1
 		
 	fm_set_kvd(ent,"tsweaponid",wpnId,"ts_groundweapon");
 	fm_set_kvd(ent,"wduration",duration,"ts_groundweapon");
