@@ -1,6 +1,7 @@
 *.amxx
 *.amx
 /compilers
+/Compilers
 /compiled
 /scripts
 /.vscode
